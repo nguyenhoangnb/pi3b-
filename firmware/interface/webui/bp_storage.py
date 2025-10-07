@@ -1,0 +1,29 @@
+from __future__ import annotations
+from flask import current_app
+from flask import Blueprint, jsonify, send_from_directory, abort
+from pathlib import Path
+from .helpers import disk_info, cfg_get
+
+bp = Blueprint("storage", __name__)
+
+@bp.get("/status")
+def status_json():
+    rr = Path(cfg_get("paths.record_root","/media/ssd/picam"))
+    st = disk_info(rr)
+    return jsonify(dict(
+        ok=True,
+        device=(current_app.config.get("PICAM_CFG") or {}).get("device", {}),
+        leds={},  # nếu cần có thể import từ helpers.leds_status()
+        storage=dict(path=str(rr), **st, min_free_gb=float(cfg_get("storage.min_free_gb",10))),
+        wifi_iface=cfg_get("wifi.iface","wlan0"),
+        lte_iface=cfg_get("lte.iface","wwan0"),
+        gnss_port=cfg_get("gnss.port","/dev/ttyACM0"),
+    ))
+
+@bp.route("/download/<path:fname>")
+def download_file(fname: str):
+    rr = Path(cfg_get("paths.record_root","/media/ssd/picam"))
+    p = (rr / fname).resolve()
+    if rr not in p.parents and p != rr: abort(403)
+    if not p.exists(): abort(404)
+    return send_from_directory(rr, p.name, as_attachment=True)

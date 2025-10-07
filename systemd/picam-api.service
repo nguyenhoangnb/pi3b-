@@ -1,0 +1,17 @@
+[Unit]
+Description=PiCam Mobile API (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin
+EnvironmentFile=/etc/default/picam
+ExecStart=/usr/bin/env bash -lc 'source .venv/bin/activate && exec uvicorn firmware.interface.api_fastapi:app --host 0.0.0.0 --port ${PICAM_API_PORT:-8081}'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

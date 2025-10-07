@@ -1,0 +1,34 @@
+storage:
+  mount_point: /media/ssd/picam
+  segment_sec: 600
+  min_free_gb: 2
+record:
+  video_size: 640x480
+  fps: 25
+  vcodec: libx264
+  crf: 28
+  preset: veryfast
+overlay:
+  timestamp: true
+  gps: true
+  audio: true
+wifi:
+  client:
+    enabled: false
+    ssid: "PICAM"
+    psk: "0123456789"
+    connect_timeout_s: 30
+ap:
+  ssid_prefix: "PICAM-"
+  open: true
+  fallback_delay_s: 40
+  auto_off_after_reed_s: 900
+  global_timeout_s: 70
+reed:
+  hold_reset_factory_s: 10
+gps:
+  hdop_ok_threshold: 2.0
+cell:
+  enable: false
+rtc:
+  enable: true

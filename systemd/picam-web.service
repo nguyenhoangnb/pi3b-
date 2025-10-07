@@ -1,0 +1,18 @@
+[Unit]
+Description=PiCam WebUI (Flask)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin
+EnvironmentFile=/etc/default/picam
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/env bash -lc 'source .venv/bin/activate; exec python /home/admin/run_webui.py'
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
