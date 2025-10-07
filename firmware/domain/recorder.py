@@ -59,6 +59,7 @@ class VideoRecorder:
         
         # Recording state
         self.is_recording = False
+        self.temp_recording = False
         self.current_writer = None
         self.current_recorder_process = None  # FFmpeg process for video+audio recording
         self.segment_start_time = None

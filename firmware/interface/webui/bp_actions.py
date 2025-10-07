@@ -15,12 +15,12 @@ def action_record():
         # Use the enhanced set_recording function that handles VideoRecorder
         set_recording(True)
         # Also try to start systemd service as fallback
-        os.system("sudo systemctl start picam-recorder.service >/dev/null 2>&1")
+        # os.system("sudo systemctl start picam-recorder.service >/dev/null 2>&1")
     elif cmd == "stop":
         # Use the enhanced set_recording function
         set_recording(False)
         # Also stop systemd service
-        os.system("sudo systemctl stop picam-recorder.service >/dev/null 2>&1")
+        # os.system("sudo systemctl stop picam-recorder.service >/dev/null 2>&1")
     return redirect("/")
 
 @bp.post("/action/wifi")

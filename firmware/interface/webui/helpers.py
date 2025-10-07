@@ -165,12 +165,14 @@ def set_recording(active: bool):
         try:
             if active:
                 result = recorder.start_recording()
+                recorder.temp_recording = False
                 if result:
                     print("✓ Recording started via VideoRecorder")
                 else:
                     print("⚠ Failed to start recording via VideoRecorder")
             else:
                 recorder.stop_recording()
+                recorder.temp_recording = True
                 print("✓ Recording stopped via VideoRecorder")
         except Exception as e:
             print(f"⚠ Error controlling recorder: {e}")

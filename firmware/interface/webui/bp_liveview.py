@@ -84,9 +84,11 @@ def _ensure_recorder_running():
         return False
     
     # If already recording, return immediately
-    if recorder.is_recording:
-        return True
+    if recorder.temp_recording:
+        return False
     
+    if recorder.is_recording and not recorder.temp_recording:
+        return True
     # Start recording
     print("🚀 Starting recorder for live view...")
     try:
