@@ -114,9 +114,10 @@ class FFmpegCamera:
 
     def __exit__(self, exc_type, exc, tb):
         self.stop()
-from usb_manager import USBManager
+
 
 def record_loop():
+    from usb_manager import USBManager
     usb = USBManager("/media/hoang/UBUNTU 22_0", min_free_percent=10, min_free_gb=1.0, camera_id=1)
     cam = FFmpegCamera(device="/dev/video0", width=640, height=480, fps=FPS)
     cam.start()

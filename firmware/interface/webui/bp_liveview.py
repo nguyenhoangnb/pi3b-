@@ -2,52 +2,193 @@ from __future__ import annotations
 from flask import Blueprint, Response, send_from_directory
 from pathlib import Path
 import subprocess
-from .helpers import rec_is_active, cfg_get
+import time
+from .helpers import rec_is_active, cfg_get, get_recorder
 
 bp = Blueprint("liveview", __name__)
+HLS_DIR = Path("/tmp/picam_hls/")
+HLS_DIR.mkdir(parents=True, exist_ok=True)
 
-HLS_DIR = Path("/tmp/picam_hls")
 
 def _mjpeg_from_hls():
-    cmd = ["ffmpeg","-hide_banner","-loglevel","error","-re","-i", str(HLS_DIR/"live.m3u8"),
-           "-f","mpjpeg","-q:v","7","-pix_fmt","yuvj422p","-boundary_tag","frame","-"]
+    """Convert HLS stream to MJPEG"""
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-re",  # Read input at native frame rate
+        "-i", str(HLS_DIR / "live.m3u8"),
+        "-f", "mpjpeg",
+        "-q:v", "7",
+        "-pix_fmt", "yuvj422p",
+        "-boundary_tag", "frame",
+        "-"
+    ]
+    
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
     try:
         while True:
             chunk = p.stdout.read(4096)
-            if not chunk: break
+            if not chunk:
+                break
             yield chunk
     finally:
-        try: p.kill()
-        except: pass
+        try:
+            p.kill()
+            p.wait(timeout=2)
+        except:
+            pass
+
 
 def _mjpeg_from_v4l2(dev: str, fmt: str):
-    cmd = ["ffmpeg","-hide_banner","-loglevel","error","-f","v4l2","-input_format","yuyv422",
-           "-framerate","15","-video_size",fmt,"-i",dev,"-f","mpjpeg","-q:v","7","-pix_fmt","yuvj422p","-boundary_tag","frame","-"]
+    """Stream MJPEG directly from camera"""
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-f", "v4l2",
+        "-input_format", "yuyv422",
+        "-framerate", "15",
+        "-video_size", fmt,
+        "-i", dev,
+        "-f", "mpjpeg",
+        "-q:v", "7",
+        "-pix_fmt", "yuvj422p",
+        "-boundary_tag", "frame",
+        "-"
+    ]
+    
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
     try:
         while True:
             chunk = p.stdout.read(4096)
-            if not chunk: break
+            if not chunk:
+                break
             yield chunk
     finally:
-        try: p.kill()
-        except: pass
+        try:
+            p.kill()
+            p.wait(timeout=2)
+        except:
+            pass
+
+
+def _ensure_recorder_running():
+    """
+    Ensure recorder is running to provide HLS stream.
+    Returns True if recorder is active or successfully started.
+    """
+    recorder = get_recorder()
+    if recorder is None:
+        print("⚠ VideoRecorder not available")
+        return False
+    
+    # If already recording, return immediately
+    if recorder.is_recording:
+        return True
+    
+    # Start recording
+    print("🚀 Starting recorder for live view...")
+    try:
+        result = recorder.start_recording()
+        if not result:
+            print("⚠ Failed to start recorder")
+            return False
+        
+        # Wait a bit for recorder to actually start
+        # (recording thread is daemon and starts asynchronously)
+        time.sleep(0.5)
+        return True
+        
+    except Exception as e:
+        print(f"⚠ Error starting recorder: {e}")
+        return False
+
+
+def _wait_for_hls_ready(timeout: float = 5.0) -> bool:
+    """
+    Wait for HLS stream to be ready.
+    Returns True if HLS files exist, False if timeout.
+    """
+    m3u8_file = HLS_DIR / "live.m3u8"
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        # Check if m3u8 file exists and has content
+        if m3u8_file.exists():
+            try:
+                # Check if file has some content (not empty)
+                if m3u8_file.stat().st_size > 0:
+                    # Also check if at least one .ts segment exists
+                    ts_files = list(HLS_DIR.glob("*.ts"))
+                    if ts_files:
+                        print(f"✓ HLS ready: {m3u8_file}")
+                        return True
+            except:
+                pass
+        
+        time.sleep(0.2)  # Check every 200ms
+    
+    print(f"⚠ HLS not ready after {timeout}s")
+    return False
+
 
 @bp.get("/hls/live.m3u8")
 def hls_playlist():
-    m3u = HLS_DIR / "live.m3u8"
-    if not m3u.exists():
-        return Response("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n", mimetype="application/vnd.apple.mpegurl")
+    """Serve HLS playlist file"""
+    m3u8_file = HLS_DIR / "live.m3u8"
+    
+    if not m3u8_file.exists():
+        # Return empty playlist if file doesn't exist
+        return Response(
+            "#EXTM3U\n"
+            "#EXT-X-VERSION:3\n"
+            "#EXT-X-TARGETDURATION:2\n"
+            "#EXT-X-MEDIA-SEQUENCE:0\n",
+            mimetype="application/vnd.apple.mpegurl"
+        )
+    
     return send_from_directory(HLS_DIR, "live.m3u8")
+
 
 @bp.get("/hls/<path:name>")
 def hls_files(name: str):
+    """Serve HLS segment files (.ts)"""
     return send_from_directory(HLS_DIR, name)
+
 
 @bp.get("/live.mjpg")
 def live_mjpg():
-    use_hls = rec_is_active() and (HLS_DIR/"live.m3u8").exists()
-    gen = _mjpeg_from_hls() if use_hls else _mjpeg_from_v4l2(cfg_get("video.v4l2_device","/dev/video0"),
-                                                             cfg_get("video.v4l2_format","1280x720"))
-    return Response(gen, mimetype="multipart/x-mixed-replace; boundary=frame")
+    """
+    Serve live MJPEG stream.
+    - If recorder is active and HLS available: transcode from HLS
+    - Otherwise: stream directly from camera
+    """
+    # Try to ensure recorder is running
+    recorder_started = _ensure_recorder_running()
+    
+    # Determine which source to use
+    use_hls = False
+    
+    if recorder_started and rec_is_active():
+        # Wait for HLS to be ready (with timeout)
+        if _wait_for_hls_ready(timeout=3.0):
+            use_hls = True
+            print("📹 Using HLS source for MJPEG")
+        else:
+            print("⚠ HLS not ready, falling back to V4L2")
+    else:
+        print("ℹ Recorder not active, using V4L2 directly")
+    
+    # Generate MJPEG stream
+    if use_hls:
+        gen = _mjpeg_from_hls()
+    else:
+        dev = cfg_get("video.v4l2_device", "/dev/video0")
+        fmt = cfg_get("video.v4l2_format", "1280x720")
+        gen = _mjpeg_from_v4l2(dev, fmt)
+    
+    return Response(
+        gen,
+        mimetype="multipart/x-mixed-replace; boundary=frame"
+    )

@@ -1,34 +1,59 @@
-storage:
-  mount_point: /media/ssd/picam
-  segment_sec: 600
-  min_free_gb: 2
-record:
-  video_size: 640x480
-  fps: 25
-  vcodec: libx264
-  crf: 28
-  preset: veryfast
-overlay:
-  timestamp: true
-  gps: true
+api_version: v1
+device:
+  id: "PICAM-0001"
+  model: "PiCam-Full"
+  hw_rev: "A1"
+  fw_version: "0.2.0"
+capabilities:
+  video: true
   audio: true
+  lte: true
+  gnss: true
+  storage: true
+api:
+  host: "0.0.0.0"
+  port: 8081
+  api_key: "change-this-api-key"
+webui:
+  host: "0.0.0.0"
+  port: 8080
+paths:
+  record_root: /media/hoang/UBUNTU 22_0
+  log_dir: /media/hoang/UBUNTU 22_0
+storage:
+  min_free_gb: 2
+  segment_seconds: 120
+  container: mkv
+  filename_pattern: "%Y%m%d-%H%M%S.mkv"
+video:
+  v4l2_device: "/dev/video0"
+  v4l2_format: "640x480"
+  v4l2_fps: 25
+audio:
+  alsa_device: null
+  sample_rate: 48000
+overlay:
+  timestamp_font: "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+  timestamp_size: 24
+  timestamp_position: "x=w-tw-16:y=h-th-16"
+gpio:
+  record_led: 26
+  wifi_led: 13
+  lte_led: 6
+  gps_led: 5
+  reed: 17
+  factory: 27
 wifi:
-  client:
-    enabled: false
-    ssid: "PICAM"
-    psk: "0123456789"
-    connect_timeout_s: 30
-ap:
-  ssid_prefix: "PICAM-"
-  open: true
-  fallback_delay_s: 40
-  auto_off_after_reed_s: 900
-  global_timeout_s: 70
-reed:
-  hold_reset_factory_s: 10
-gps:
-  hdop_ok_threshold: 2.0
-cell:
-  enable: false
-rtc:
-  enable: true
+  ssid: "PICAM"
+  psk: "0123456789"
+  iface: "wlan0"
+  idle_seconds: 600
+  connect_timeout: 60
+lte:
+  enabled: true
+  iface: "wwan0"
+  provider: "auto"
+gnss:
+  enabled: true
+  port: "/dev/ttyACM0"
+  baud: 9600

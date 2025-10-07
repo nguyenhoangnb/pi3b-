@@ -1,4 +1,22 @@
-import RPi.GPIO as GPIO
+try:
+    import RPi.GPIO as GPIO
+
+except ModuleNotFoundError:
+    import sys
+    import fake_rpi
+    original_output = fake_rpi.RPi._GPIO.output
+    # Disable fake_rpi debug output
+    # Redirect fake_rpi output to suppress debug messages
+    fake_rpi.RPi._GPIO.output_original = fake_rpi.RPi._GPIO.output
+
+    def silent_output(pin, value, *args, **kwargs):
+        return original_output(pin, value, *args, **kwargs)
+
+    fake_rpi.RPi._GPIO.output = silent_output
+
+    sys.modules['RPi'] = fake_rpi.RPi
+    sys.modules['RPi.GPIO'] = fake_rpi.RPi.GPIO
+    import RPi.GPIO as GPIO
 import time
 
 class gpioLed:
@@ -26,34 +44,47 @@ class gpioLed:
         GPIO.cleanup(self.pin)
 
 def main():
-    print("Check function")
+    print("=== LED Control Test ===")
     led = gpioLed(13)
-    while True:
-        print("\n===== MENU =====")
-        print("1. Turn on led")
-        print("2. Turn off led")
-        print("3. Blink led")
-        print("4. Exit")
-        print("================")
-        choice = input("Select option (1–4): ").strip()
+    
+    try:
+        while True:
+            print("\n===== MENU =====")
+            print("1. Turn on LED")
+            print("2. Turn off LED")
+            print("3. Blink LED")
+            print("4. Exit")
+            print("================")
+            choice = input("Select option (1–4): ").strip()
 
-        if choice == "1":
-            print("\n Turn on led")
-            gpioLed.on()
-        elif choice == "2":
-            print("\n Turn off led")
-            gpioLed.off()
+            if choice == "1":
+                print("🔆 Turning on LED")
+                led.on()
+                
+            elif choice == "2":
+                print("🔅 Turning off LED")
+                led.off()
 
-        elif choice == "3":
-            print("Start blink led")
-            gpioLed.blink()
+            elif choice == "3":
+                print("⚡ Start blinking LED (5 times)")
+                for i in range(5):
+                    led.blink(0.5)
+                    print(f"  Blink {i+1}/5")
 
-        elif choice == "4":
-            print("Exit")
-            gpioLed.cleanup()
-            break
+            elif choice == "4":
+                print("👋 Exit")
+                break
 
-        
+            else:
+                print("⚠ Invalid selection. Please choose 1–4.")
+    
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        led.cleanup()
+        print("✓ GPIO cleanup completed")
 
-        else:
-            print("⚠ Invalid selection. Please choose 1–5.")
+if __name__ == "__main__":
+    main()

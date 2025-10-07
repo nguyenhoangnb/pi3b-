@@ -1,12 +1,17 @@
 import smbus2
 import time
 from datetime import datetime
+import os
 """
 Use I2C to read module rtc
 """
 
 class rtcModule:
     def __init__(self, bus=1, address=0x68):
+        if not os.path.exists("/dev/i2c-1"):
+            print("⚠ No I2C device found — using fake_rpi.")
+            import sys, fake_rpi
+            sys.modules['smbus'] = fake_rpi.smbus
         self.address = address
         try:
             self.bus = smbus2.SMBus(bus)

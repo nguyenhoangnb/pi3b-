@@ -8,13 +8,23 @@ try:
     import gpiod
 except Exception:
     gpiod = None
+
+# Import recorder module
+try:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from firmware.domain.recorder import VideoRecorder
+except Exception as e:
+    print(f"Warning: Could not import VideoRecorder: {e}")
+    VideoRecorder = None
     
 APPLE_RE = re.compile(r"(iPhone|iPad|iPod|Macintosh).*Safari", re.I)
 
 HLS_DIR = Path("/tmp/picam_hls")
 FLAG_REC = Path("/tmp/picam.recorder.active")
 
-
+# Global recorder instance
+_recorder_instance = None
 
 _gpio_lines = {}  # cache {name: (line, active_low)}
 
@@ -129,10 +139,49 @@ def list_media(p: Path) -> List[Dict[str, Any]]:
     # 200 file mới nhất
     return list(sorted(items, key=lambda x: x["name"]))[-200:][::-1]
 
+def get_recorder():
+    """Get or create global recorder instance"""
+    global _recorder_instance
+    if _recorder_instance is None and VideoRecorder is not None:
+        try:
+            _recorder_instance = VideoRecorder()
+        except Exception as e:
+            print(f"Failed to initialize VideoRecorder: {e}")
+    return _recorder_instance
+
 def rec_is_active() -> bool:
+    """Check if recording is active - use recorder if available, fallback to flag file"""
+    recorder = get_recorder()
+    if recorder:
+        return recorder.is_recording
     return FLAG_REC.exists()
 
 def set_recording(active: bool):
+    """Start/stop recording using recorder or fallback to flag file"""
+    recorder = get_recorder()
+    
+    if recorder:
+        # Use the recorder instance
+        try:
+            if active:
+                result = recorder.start_recording()
+                if result:
+                    print("✓ Recording started via VideoRecorder")
+                else:
+                    print("⚠ Failed to start recording via VideoRecorder")
+            else:
+                recorder.stop_recording()
+                print("✓ Recording stopped via VideoRecorder")
+        except Exception as e:
+            print(f"⚠ Error controlling recorder: {e}")
+            # Fallback to flag file method
+            _set_recording_fallback(active)
+    else:
+        # Fallback to original flag file method
+        _set_recording_fallback(active)
+
+def _set_recording_fallback(active: bool):
+    """Fallback recording control using flag file"""
     # Bật/tắt LED ngay lập tức (ghi thực tế do service đảm nhiệm)
     try:
         _gpio_set_named("record", bool(active))

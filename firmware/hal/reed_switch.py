@@ -3,7 +3,7 @@ import time
 import RPi.GPIO as GPIO
 
 class ReedSwitch:
-    def __init__(self, pin,callback=None, bouncetime=0.05):
+    def __init__(self, pin=17,callback=None, bouncetime=0.05):
         self.pin = pin
         self.bouncetime = bouncetime
         self.callback = callback
