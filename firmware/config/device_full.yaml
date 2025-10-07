@@ -5,11 +5,11 @@ device:
   hw_rev: "A1"
   fw_version: "0.2.0"
 capabilities:
-  video: true
-  audio: true
-  lte: true
-  gnss: true
-  storage: true
+  video: True
+  audio: True
+  lte: True
+  gnss: True
+  storage: True
 api:
   host: "0.0.0.0"
   port: 8081
@@ -22,7 +22,7 @@ paths:
   log_dir: /media/hoang/UBUNTU 22_0
 storage:
   min_free_gb: 2
-  segment_seconds: 120
+  segment_seconds: 20
   container: mkv
   filename_pattern: "%Y%m%d-%H%M%S.mkv"
 video:
@@ -33,7 +33,7 @@ audio:
   alsa_device: null
   sample_rate: 48000
 overlay:
-  timestamp_font: "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+  timestamp_font: "/usr/share/fonts/Truetype/dejavu/DejaVuSansMono.ttf"
   timestamp_size: 24
   timestamp_position: "x=w-tw-16:y=h-th-16"
 gpio:
@@ -50,10 +50,10 @@ wifi:
   idle_seconds: 600
   connect_timeout: 60
 lte:
-  enabled: true
+  enabled: True
   iface: "wwan0"
   provider: "auto"
 gnss:
-  enabled: true
+  enabled: True
   port: "/dev/ttyACM0"
   baud: 9600

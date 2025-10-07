@@ -18,15 +18,31 @@ import json
 from pathlib import Path
 import shutil
 
-# Add project path for imports
-sys.path.insert(0, '/home/hoang/Downloads/PiCam_3Layer')
+# Add project path for imports (relative to current file location)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from firmware.hal.camera import FFmpegCamera
 from firmware.hal.usb_manager import USBManager
 from firmware.hal.gpio_leds import gpioLed
-# from firmware.hal.gnss import GNSSModule
+from firmware.hal.gnss import GNSSModule
 from firmware.hal.rtc import rtcModule
 from firmware.config.config_loader import load
+
+# Try to import Micro, but don't fail if audio dependencies are missing
+try:
+    from firmware.hal.micro import Micro
+except Exception as e:
+    print(f"⚠ Audio dependencies not available: {e}")
+    # Create a dummy Micro class
+    class Micro:
+        def __init__(self, *args, **kwargs):
+            pass
+        def check_device_available(self):
+            return False
+        def record(self, *args, **kwargs):
+            return None
+        def save(self, *args, **kwargs):
+            pass
 
 class VideoRecorder:
     def __init__(self, config_file=None):
@@ -37,12 +53,14 @@ class VideoRecorder:
         self.camera = None
         self.usb_manager = None
         self.record_led = None
+        self.micro = None
         self.gnss = None
         self.rtc = None
         
         # Recording state
         self.is_recording = False
         self.current_writer = None
+        self.current_recorder_process = None  # FFmpeg process for video+audio recording
         self.segment_start_time = None
         self.recording_thread = None
         self._stop_recording = False
@@ -77,7 +95,8 @@ class VideoRecorder:
     def _load_config(self, config_file=None):
         """Load configuration from YAML file"""
         if config_file is None:
-            config_file = '/home/hoang/Downloads/PiCam_3Layer/firmware/config/device_full.yaml'
+            # Use relative path from current file location
+            config_file = Path(__file__).parent.parent / 'config' / 'device_full.yaml'
         if config_file and os.path.exists(config_file):
             try:
                 yaml_config = load(config_file)
@@ -111,6 +130,12 @@ class VideoRecorder:
                 'width': width,
                 'height': height,
                 'fps': video_config.get('v4l2_fps', 25)
+            },
+            'audio': {
+                'enabled': yaml_config.get('capabilities', {}).get('audio', True),
+                'device': yaml_config.get('audio', {}).get('device', None),  # None = default device
+                'sample_rate': yaml_config.get('audio', {}).get('sample_rate', 48000),
+                'channels': yaml_config.get('audio', {}).get('channels', 1)
             },
             'usb': {
                 'path': paths_config.get('record_root', '/media/ssd'),
@@ -147,6 +172,12 @@ class VideoRecorder:
                 'width': 640,
                 'height': 480,
                 'fps': 30
+            },
+            'audio': {
+                'enabled': True,
+                'device': None,  # None = default device
+                'sample_rate': 48000,
+                'channels': 1
             },
             'usb': {
                 'path': '/media/ssd',
@@ -207,6 +238,30 @@ class VideoRecorder:
             led_pin = self.config['leds']['record_led_pin']
             self.record_led = gpioLed(led_pin)
             print("✓ Record LED initialized")
+            
+            # Microphone (optional - only if enabled in config)
+            if self.config.get('audio', {}).get('enabled', True):
+                try:
+                    audio_config = self.config['audio']
+                    self.micro = Micro(
+                        alsa_device=audio_config.get('device', None),
+                        sample_rate=audio_config.get('sample_rate', 48000)
+                    )
+                    if self.micro.check_device_available():
+                        print("✓ Microphone initialized")
+                        self.enable_audio = True
+                    else:
+                        print("⚠ No microphone detected")
+                        self.micro = None
+                        self.enable_audio = False
+                except Exception as e:
+                    print(f"⚠ Microphone not available: {e}")
+                    self.micro = None
+                    self.enable_audio = False
+            else:
+                print("ℹ Audio disabled in config")
+                self.micro = None
+                self.enable_audio = False
             
             # GNSS (optional - only if enabled in config)
             if self.config.get('capabilities', {}).get('gnss', False):
@@ -498,7 +553,7 @@ class VideoRecorder:
         return frame
     
     def _create_new_segment(self):
-        """Create a new video segment file"""
+        """Create a new video segment file with audio support"""
         if not self.usb_manager.is_available():
             print("⚠ USB not available, waiting...")
             self.usb_manager.wait_until_available()
@@ -507,34 +562,132 @@ class VideoRecorder:
             print("⚠ Insufficient space, cleaning up...")
             return False
         
-        # Close current writer if exists
+        # Close current recording process if exists
+        if self.current_recorder_process:
+            try:
+                self.current_recorder_process.stdin.close()
+                self.current_recorder_process.terminate()
+                self.current_recorder_process.wait(timeout=3)
+                print("✓ Previous recording process closed safely")
+            except Exception as e:
+                print(f"⚠ Error closing previous recording process: {e}")
+        
+        # Close current OpenCV writer if exists (fallback)
         if self.current_writer:
             try:
                 self.current_writer.release()
-                print("✓ Previous segment closed safely")
             except Exception as e:
-                print(f"⚠ Error closing previous segment: {e}")
+                print(f"⚠ Error closing OpenCV writer: {e}")
         
         # Create new filename
         filename = self.usb_manager.get_new_filename()
         
-        # Setup video writer
-        fourcc = cv2.VideoWriter_fourcc(*self.config['recording']['format'])
-        cam_config = self.config['camera']
+        # Try to create FFmpeg recording process with audio (if available)
+        if self.enable_audio and self.micro:
+            success = self._create_ffmpeg_recorder_with_audio(filename)
+        else:
+            success = self._create_opencv_recorder(filename)
         
-        self.current_writer = cv2.VideoWriter(
-            filename,
-            fourcc,
-            cam_config['fps'],
-            (cam_config['width'], cam_config['height'])
-        )
-        
-        if self.current_writer.isOpened():
+        if success:
             self.segment_start_time = time.time()
             print(f"📹 New segment: {os.path.basename(filename)}")
             return True
         else:
-            print(f"✗ Failed to create video writer for {filename}")
+            print(f"✗ Failed to create recorder for {filename}")
+            return False
+    
+    def _create_ffmpeg_recorder_with_audio(self, filename):
+        """Create FFmpeg recording process with video and audio"""
+        try:
+            cam_config = self.config['camera']
+            audio_config = self.config['audio']
+            
+            # Build FFmpeg command for recording with audio
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                # Video input from pipe
+                "-f", "rawvideo",
+                "-pix_fmt", "bgr24",
+                "-s", f"{cam_config['width']}x{cam_config['height']}",
+                "-r", str(cam_config['fps']),
+                "-i", "pipe:0",
+                # Audio input from ALSA
+                "-f", "pulse" if audio_config.get('device') is None else "alsa",
+                "-ac", str(audio_config['channels']),
+                "-ar", str(audio_config['sample_rate']),
+            ]
+            
+            # Add audio device
+            if audio_config.get('device'):
+                cmd.extend(["-i", f"hw:{audio_config['device']}"])
+            else:
+                cmd.extend(["-i", "default"])  # Use default audio device
+            
+            # Encoding settings
+            cmd.extend([
+                # Video encoding
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "23",
+                "-pix_fmt", "yuv420p",
+                # Audio encoding
+                "-c:a", "aac",
+                "-b:a", "128k",
+                # Sync settings
+                "-map", "0:v:0",  # Map video from first input
+                "-map", "1:a:0",  # Map audio from second input
+                "-vsync", "1",
+                "-async", "1",
+                # Output
+                filename
+            ])
+            
+            print(f"🎬 Starting FFmpeg recording with audio: {' '.join(cmd[6:12])}...")
+            
+            self.current_recorder_process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE
+            )
+            
+            # Check if process started successfully
+            time.sleep(0.2)
+            if self.current_recorder_process.poll() is not None:
+                err = self.current_recorder_process.stderr.read().decode('utf-8', errors='ignore')
+                print(f"❌ FFmpeg recording failed to start: {err}")
+                self.current_recorder_process = None
+                return False
+            
+            print("✓ FFmpeg recording with audio started")
+            return True
+            
+        except Exception as e:
+            print(f"⚠ FFmpeg audio recording error: {e}")
+            return False
+    
+    def _create_opencv_recorder(self, filename):
+        """Fallback: Create OpenCV video writer (video only)"""
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*self.config['recording']['format'])
+            cam_config = self.config['camera']
+            
+            self.current_writer = cv2.VideoWriter(
+                filename,
+                fourcc,
+                cam_config['fps'],
+                (cam_config['width'], cam_config['height'])
+            )
+            
+            if self.current_writer.isOpened():
+                print("✓ OpenCV video recording started (no audio)")
+                return True
+            else:
+                print("✗ Failed to create OpenCV video writer")
+                return False
+                
+        except Exception as e:
+            print(f"⚠ OpenCV recording error: {e}")
             return False
     
     def _should_create_new_segment(self):
@@ -586,8 +739,19 @@ class VideoRecorder:
                     # Add overlays for recording
                     frame_with_overlays = self._add_overlays(frame)
                     
-                    # Write to video file (with overlays)
-                    if self.current_writer and self.current_writer.isOpened():
+                    # Write to recording (FFmpeg with audio or OpenCV fallback)
+                    if self.current_recorder_process:
+                        # FFmpeg recording with audio
+                        try:
+                            self.current_recorder_process.stdin.write(frame_with_overlays.tobytes())
+                            self.current_recorder_process.stdin.flush()
+                        except BrokenPipeError:
+                            print("⚠ Recording pipe broken")
+                            self.current_recorder_process = None
+                        except Exception as e:
+                            print(f"⚠ Recording write error: {e}")
+                    elif self.current_writer and self.current_writer.isOpened():
+                        # OpenCV fallback (video only)
                         self.current_writer.write(frame_with_overlays)
                     
                     # Write to HLS stream (without overlays for better performance)
@@ -621,7 +785,23 @@ class VideoRecorder:
         # Stop HLS streaming
         self._stop_hls_stream()
         
-        # Close video writer
+        # Close recording process (FFmpeg with audio)
+        if self.current_recorder_process:
+            try:
+                if self.current_recorder_process.stdin:
+                    self.current_recorder_process.stdin.close()
+                self.current_recorder_process.terminate()
+                self.current_recorder_process.wait(timeout=5)
+                print("✓ Recording process closed")
+            except Exception as e:
+                print(f"⚠ Error closing recording process: {e}")
+                try:
+                    self.current_recorder_process.kill()
+                except:
+                    pass
+            self.current_recorder_process = None
+        
+        # Close video writer (fallback)
         if self.current_writer:
             try:
                 self.current_writer.release()
@@ -692,6 +872,8 @@ class VideoRecorder:
             'usb_available': self.usb_manager.is_available() if self.usb_manager else False,
             'camera_active': self.camera.proc is not None if self.camera else False,
             'hls_active': self.hls_process is not None and self.hls_process.poll() is None,
+            'audio_available': self.micro is not None and self.enable_audio,
+            'recording_with_audio': self.current_recorder_process is not None,
             'current_segment_duration': 0
         }
         
@@ -717,6 +899,14 @@ class VideoRecorder:
                 self.record_led.cleanup()
             except Exception as e:
                 print(f"⚠ LED cleanup error: {e}")
+        
+        # Cleanup microphone
+        if self.micro:
+            try:
+                # Stop any ongoing recording
+                print("✓ Microphone cleanup completed")
+            except Exception as e:
+                print(f"⚠ Microphone cleanup error: {e}")
         
         # Cleanup GNSS
         if self.gnss:
@@ -753,9 +943,10 @@ def main():
             print("5. Toggle GPS Overlay")
             print("6. Test LED")
             print("7. Restart HLS")
-            print("8. Exit")
+            print("8. Test Audio")
+            print("9. Exit")
             
-            choice = input("Enter choice (1-8): ").strip()
+            choice = input("Enter choice (1-9): ").strip()
             
             if choice == "1":
                 recorder.start_recording()
@@ -799,6 +990,28 @@ def main():
                     print("✗ HLS restart failed")
                 
             elif choice == "8":
+                if recorder.micro:
+                    print("Testing microphone...")
+                    try:
+                        print("Recording 3 seconds of audio...")
+                        audio_data = recorder.micro.record(duration=3)
+                        print(f"✓ Audio recorded: {len(audio_data)} samples")
+                        
+                        test_file = "/tmp/test_audio.wav"
+                        recorder.micro.save(test_file)
+                        print(f"✓ Audio saved to {test_file}")
+                        
+                        # Show audio device info
+                        import sounddevice as sd
+                        devices = sd.query_devices()
+                        print(f"✓ Available audio devices: {len(devices)}")
+                        
+                    except Exception as e:
+                        print(f"⚠ Audio test failed: {e}")
+                else:
+                    print("⚠ No microphone available")
+                    
+            elif choice == "9":
                 print("Exiting...")
                 break
                 

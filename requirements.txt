@@ -1,1 +1,3 @@
 pyserial
+pyaudio
+opencv-python
