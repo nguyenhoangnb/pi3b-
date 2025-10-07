@@ -1,6 +1,10 @@
 import smbus2
 import time
 from datetime import datetime
+"""
+Use I2C to read module rtc
+"""
+
 class rtcModule:
     def __init__(self, bus=1, address=0x68):
         self.address = address

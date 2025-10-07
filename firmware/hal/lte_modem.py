@@ -3,6 +3,10 @@ import serial
 import RPi.GPIO as GPIO
 import subprocess
 
+"""
+Use uart to connect to LTE module
+"""
+
 class LTEManager:
     def __init__(self, port="/dev/ttyAMA0", baudrate=115200, pwrkey_pin=17):
         self.port = port

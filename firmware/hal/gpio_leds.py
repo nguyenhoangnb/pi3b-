@@ -24,3 +24,36 @@ class gpioLed:
         time.sleep(interval)
     def cleanup(self):
         GPIO.cleanup(self.pin)
+
+def main():
+    print("Check function")
+    led = gpioLed(13)
+    while True:
+        print("\n===== MENU =====")
+        print("1. Turn on led")
+        print("2. Turn off led")
+        print("3. Blink led")
+        print("4. Exit")
+        print("================")
+        choice = input("Select option (1–4): ").strip()
+
+        if choice == "1":
+            print("\n Turn on led")
+            gpioLed.on()
+        elif choice == "2":
+            print("\n Turn off led")
+            gpioLed.off()
+
+        elif choice == "3":
+            print("Start blink led")
+            gpioLed.blink()
+
+        elif choice == "4":
+            print("Exit")
+            gpioLed.cleanup()
+            break
+
+        
+
+        else:
+            print("⚠ Invalid selection. Please choose 1–5.")
