@@ -20,14 +20,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from firmware.hal.wifi import WifiManager
 from firmware.hal.gpio_leds import gpioLed
 from firmware.hal.reed_switch import ReedSwitch
-from config.config_loader import load
+from firmware.config.config_loader import load
 class WiFiOrchestrator:
     def __init__(self, config):
-        self.config = load("device_full.yaml")
-        self.wifi_config = config.get('wifi', {})
-        self.gpio_config = config.get('gpio', {})
-        self.device_config = config.get('device', {})
-        self.paths_config = config.get('paths', {})
+        self.config = config
+        self.wifi_config = self.config.get('wifi', {})
+        self.gpio_config = self.config.get('gpio', {})
+        self.device_config = self.config.get('device', {})
+        self.paths_config = self.config.get('paths', {})
 
         # WiFi settings
         self.client_ssid = self.wifi_config.get('ssid', 'PICAM')
@@ -466,21 +466,9 @@ class WiFiOrchestrator:
 def main():
     """Test WiFi Orchestrator"""
     print("=== 🧭 WiFi Orchestrator Simulation ===")
-    
-    config = {
-        'wifi': {
-            'ssid': 'PICAM',
-            'password': '0123456789',
-            'ap_ssid': 'PICAM',
-            'ap_password': None
-        },
-        'gpio': {
-            'wifi_led': 13,
-            'reed': None
-        }
-    }
+
     config_data = load("config.yaml")
-    orchestrator = WiFiOrchestrator(config)
+    orchestrator = WiFiOrchestrator(config_data)
     
     try:
         orchestrator.start()
