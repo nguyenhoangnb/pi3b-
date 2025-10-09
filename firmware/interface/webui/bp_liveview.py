@@ -106,7 +106,19 @@ def _wait_for_hls_ready(timeout: float = 5.0) -> bool:
 
 @bp.get("/hls/live.m3u8")
 def hls_playlist():
-    """Serve HLS playlist file"""
+    """Serve HLS playlist file - only when recording is active"""
+    # Only serve HLS when recorder is running
+    if not rec_is_active():
+        return Response(
+            "#EXTM3U\n"
+            "#EXT-X-VERSION:3\n"
+            "#EXT-X-TARGETDURATION:2\n"
+            "#EXT-X-MEDIA-SEQUENCE:0\n"
+            "#EXT-X-ENDLIST\n",
+            mimetype="application/vnd.apple.mpegurl",
+            status=404
+        )
+    
     m3u8_file = HLS_DIR / "live.m3u8"
     
     if not m3u8_file.exists():
@@ -130,7 +142,12 @@ def hls_playlist():
 
 @bp.get("/hls/<path:name>")
 def hls_files(name: str):
-    """Serve HLS segment files (.ts)"""
+    """Serve HLS segment files (.ts) - only when recording is active"""
+    # Only serve HLS segments when recorder is running
+    if not rec_is_active():
+        from flask import abort
+        abort(404)
+    
     return send_from_directory(HLS_DIR, name)
 
 
@@ -138,29 +155,37 @@ def hls_files(name: str):
 def live_mjpg():
     """
     Serve live MJPEG stream.
-    - If recorder service is active and HLS available: transcode from HLS
-    - Otherwise: stream directly from camera
+    - Only works when recorder service is active
+    - If HLS available: transcode from HLS
+    - Otherwise: return error message
     """
+    # Only allow live view when recorder is running
+    if not rec_is_active():
+        # Return a simple error image/message instead of starting camera
+        error_response = b'--frame\r\nContent-Type: text/plain\r\n\r\nLive view only available when recording is active\r\n'
+        return Response(
+            error_response,
+            mimetype="multipart/x-mixed-replace; boundary=frame"
+        )
+    
     # Determine which source to use
     use_hls = False
     
-    if rec_is_active():
-        # Wait for HLS to be ready (with timeout)
-        if _wait_for_hls_ready(timeout=5.0):
-            use_hls = True
-            print("📹 Using HLS source for MJPEG")
-        else:
-            print("⚠ HLS not ready, falling back to V4L2")
+    # Wait for HLS to be ready (with timeout)
+    if _wait_for_hls_ready(timeout=5.0):
+        use_hls = True
+        print("📹 Using HLS source for MJPEG")
     else:
-        print("ℹ Recording service not active, using V4L2 directly")
+        print("⚠ HLS not ready, cannot provide live view")
+        # Return error if HLS not ready
+        error_response = b'--frame\r\nContent-Type: text/plain\r\n\r\nHLS stream not ready. Please wait a moment and refresh.\r\n'
+        return Response(
+            error_response,
+            mimetype="multipart/x-mixed-replace; boundary=frame"
+        )
     
-    # Generate MJPEG stream
-    if use_hls:
-        gen = _mjpeg_from_hls()
-    else:
-        dev = cfg_get("video.v4l2_device", "/dev/video0")
-        fmt = cfg_get("video.v4l2_format", "1280x720")
-        gen = _mjpeg_from_v4l2(dev, fmt)
+    # Generate MJPEG stream from HLS only
+    gen = _mjpeg_from_hls()
     
     return Response(
         gen,

@@ -88,10 +88,6 @@ class VideoRecorder:
             # Signal handlers can only be set in main thread, skip if not main
             # This is expected when VideoRecorder is instantiated from Flask web server
             pass
-        
-        # Auto-start recording
-        print("🚀 Auto-starting recording...")
-        self.start_recording()
     
     def _load_config(self, config_file=None):
         """Load configuration from YAML file"""
@@ -914,8 +910,11 @@ def main():
     
     recorder = None
     try:
-        # Initialize recorder (auto-starts recording)
+        # Initialize recorder
         recorder = VideoRecorder()
+        
+        # Start recording when service starts
+        recorder.start_recording()
         print("✓ VideoRecorder service started and recording")
         
         # Keep service running until interrupted
