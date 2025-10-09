@@ -6,3 +6,5 @@ pydantic
 pyyaml 
 httpx 
 flask
+RPi.GPIO
+smbus2

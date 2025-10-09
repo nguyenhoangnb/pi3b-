@@ -20,6 +20,8 @@ webui:
 paths:
   record_root: /media/ssd
   log_dir: /media/ssd
+usb: 
+  path: /media/ssd 
 storage:
   min_free_gb: 2
   segment_seconds: 20
