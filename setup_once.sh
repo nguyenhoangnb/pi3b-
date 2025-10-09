@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-sudo apt-get install -y ffmpeg fonts-dejavu-core python3-libgpiod raspi-gpio
+sudo apt-get install -y ffmpeg fonts-dejavu-core python3-libgpiod 
 
 # ============================================================================
 # PiCam • setup_once.sh (merged & annotated)
@@ -257,7 +257,7 @@ else
 fi
 
 # ----------------------- Core packages & Python venv -----------------------
-for p in python3-venv python3-pip python3-gpiozero ffmpeg curl jq git dnsutils iproute2 wpasupplicant unzip; do
+for p in python3-venv python3-pip python3-gpiozero ffmpeg curl jq git dnsutils iproute2 wpasupplicant unzip python3-dev portaudio19-dev; do
   ensure_pkg "$p"
 done
 

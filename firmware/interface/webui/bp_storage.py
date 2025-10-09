@@ -2,7 +2,7 @@ from __future__ import annotations
 from flask import current_app
 from flask import Blueprint, jsonify, send_from_directory, abort
 from pathlib import Path
-from .helpers import disk_info, cfg_get, get_recorder, leds_status
+from .helpers import disk_info, cfg_get, get_recording_service_status, leds_status
 
 bp = Blueprint("storage", __name__)
 
@@ -13,10 +13,10 @@ def status_json():
     
     # Get recorder status if available
     recorder_status = {}
-    recorder = get_recorder()
+    recorder = get_recording_service_status()
     if recorder:
         try:
-            recorder_status = recorder.get_status()
+            # recorder_status = recorder.get_status()
             print(recorder_status)
         except Exception as e:
             recorder_status = {"error": str(e)}
