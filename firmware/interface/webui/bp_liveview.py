@@ -3,7 +3,7 @@ from flask import Blueprint, Response, send_from_directory
 from pathlib import Path
 import subprocess
 import time
-from .helpers import rec_is_active, cfg_get, get_recorder
+from .helpers import rec_is_active, cfg_get, get_recording_service_status, set_recording
 
 bp = Blueprint("liveview", __name__)
 HLS_DIR = Path("/tmp/picam_hls/")
@@ -75,35 +75,32 @@ def _mjpeg_from_v4l2(dev: str, fmt: str):
 
 def _ensure_recorder_running():
     """
-    Ensure recorder is running to provide HLS stream.
-    Returns True if recorder is active or successfully started.
+    Ensure recorder service is running to provide HLS stream.
+    Returns True if service is active or successfully started.
     """
-    recorder = get_recorder()
-    if recorder is None:
-        print("⚠ VideoRecorder not available")
-        return False
-    
-    # If already recording, return immediately
-    if recorder.temp_recording:
-        return False
-    
-    if recorder.is_recording and not recorder.temp_recording:
+    # Check if recording service is already active
+    if rec_is_active():
+        print("✓ Recording service already active")
         return True
-    # Start recording
-    print("🚀 Starting recorder for live view...")
+    
+    # Try to start the recording service
+    print("🚀 Starting recording service for live view...")
     try:
-        result = recorder.start_recording()
-        if not result:
-            print("⚠ Failed to start recorder")
+        set_recording(True)
+        
+        # Wait a bit for service to actually start
+        time.sleep(2.0)
+        
+        # Check if it's now active
+        if rec_is_active():
+            print("✓ Recording service started successfully")
+            return True
+        else:
+            print("⚠ Recording service failed to start")
             return False
         
-        # Wait a bit for recorder to actually start
-        # (recording thread is daemon and starts asynchronously)
-        time.sleep(0.5)
-        return True
-        
     except Exception as e:
-        print(f"⚠ Error starting recorder: {e}")
+        print(f"⚠ Error starting recording service: {e}")
         return False
 
 
@@ -142,15 +139,21 @@ def hls_playlist():
     
     if not m3u8_file.exists():
         # Return empty playlist if file doesn't exist
-        return Response(
+        response = Response(
             "#EXTM3U\n"
             "#EXT-X-VERSION:3\n"
             "#EXT-X-TARGETDURATION:2\n"
             "#EXT-X-MEDIA-SEQUENCE:0\n",
             mimetype="application/vnd.apple.mpegurl"
         )
+    else:
+        response = send_from_directory(HLS_DIR, "live.m3u8")
     
-    return send_from_directory(HLS_DIR, "live.m3u8")
+    # Add cache control headers for live streaming
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache' 
+    response.headers['Expires'] = '0'
+    return response
 
 
 @bp.get("/hls/<path:name>")
@@ -163,24 +166,24 @@ def hls_files(name: str):
 def live_mjpg():
     """
     Serve live MJPEG stream.
-    - If recorder is active and HLS available: transcode from HLS
+    - If recorder service is active and HLS available: transcode from HLS
     - Otherwise: stream directly from camera
     """
-    # Try to ensure recorder is running
-    recorder_started = _ensure_recorder_running()
+    # Try to ensure recorder service is running
+    service_started = _ensure_recorder_running()
     
     # Determine which source to use
     use_hls = False
     
-    if recorder_started and rec_is_active():
+    if service_started and rec_is_active():
         # Wait for HLS to be ready (with timeout)
-        if _wait_for_hls_ready(timeout=3.0):
+        if _wait_for_hls_ready(timeout=5.0):
             use_hls = True
             print("📹 Using HLS source for MJPEG")
         else:
             print("⚠ HLS not ready, falling back to V4L2")
     else:
-        print("ℹ Recorder not active, using V4L2 directly")
+        print("ℹ Recording service not active, using V4L2 directly")
     
     # Generate MJPEG stream
     if use_hls:

@@ -927,109 +927,35 @@ class VideoRecorder:
 
 
 def main():
-    """Test the video recorder"""
-    print("=== Video Recorder Test ===\n")
+    """Main service entry point for systemd"""
+    print("🚀 PiCam VideoRecorder Service Starting...")
     
+    recorder = None
     try:
-        # Create recorder
+        # Initialize recorder (auto-starts recording)
         recorder = VideoRecorder()
-        print("✓ Recorder initialized\n")
+        print("✓ VideoRecorder service started and recording")
         
+        # Keep service running until interrupted
         while True:
-            print("\n=== Recording Control ===")
-            print("1. Start Recording")
-            print("2. Stop Recording") 
-            print("3. Show Status")
-            print("4. Toggle Time Overlay")
-            print("5. Toggle GPS Overlay")
-            print("6. Test LED")
-            print("7. Restart HLS")
-            print("8. Test Audio")
-            print("9. Exit")
+            time.sleep(1)
             
-            choice = input("Enter choice (1-9): ").strip()
-            
-            if choice == "1":
+            # Simple health check - restart recording if it died
+            if not recorder.is_recording:
+                print("⚠ Recording stopped unexpectedly, restarting...")
                 recorder.start_recording()
                 
-            elif choice == "2":
-                recorder.stop_recording()
-                
-            elif choice == "3":
-                status = recorder.get_status()
-                print("\n📊 Current Status:")
-                for key, value in status.items():
-                    print(f"  {key}: {value}")
-                
-            elif choice == "4":
-                recorder.enable_time_overlay = not recorder.enable_time_overlay
-                print(f"Time overlay: {'ON' if recorder.enable_time_overlay else 'OFF'}")
-                
-            elif choice == "5":
-                recorder.enable_gps_overlay = not recorder.enable_gps_overlay
-                print(f"GPS overlay: {'ON' if recorder.enable_gps_overlay else 'OFF'}")
-                
-            elif choice == "6":
-                if recorder.record_led:
-                    print("Testing LED...")
-                    for i in range(3):
-                        recorder.record_led.on()
-                        time.sleep(0.5)
-                        recorder.record_led.off()
-                        time.sleep(0.5)
-                    print("LED test completed")
-                else:
-                    print("LED not available")
-            
-            elif choice == "7":
-                print("Restarting HLS stream...")
-                recorder._stop_hls_stream()
-                time.sleep(1)
-                if recorder._start_hls_stream():
-                    print("✓ HLS restarted")
-                else:
-                    print("✗ HLS restart failed")
-                
-            elif choice == "8":
-                if recorder.micro:
-                    print("Testing microphone...")
-                    try:
-                        print("Recording 3 seconds of audio...")
-                        audio_data = recorder.micro.record(duration=3)
-                        print(f"✓ Audio recorded: {len(audio_data)} samples")
-                        
-                        test_file = "/tmp/test_audio.wav"
-                        recorder.micro.save(test_file)
-                        print(f"✓ Audio saved to {test_file}")
-                        
-                        # Show audio device info
-                        import sounddevice as sd
-                        devices = sd.query_devices()
-                        print(f"✓ Available audio devices: {len(devices)}")
-                        
-                    except Exception as e:
-                        print(f"⚠ Audio test failed: {e}")
-                else:
-                    print("⚠ No microphone available")
-                    
-            elif choice == "9":
-                print("Exiting...")
-                break
-                
-            else:
-                print("Invalid choice")
-        
     except KeyboardInterrupt:
-        print("\nInterrupted by user")
+        print("\n🛑 Service shutdown requested (SIGINT)")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Service error: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        try:
+        if recorder:
+            print("🧹 Cleaning up service...")
             recorder.cleanup()
-        except:
-            pass
+        print("✓ VideoRecorder service stopped")
 
 if __name__ == "__main__":
     main()
