@@ -7,10 +7,10 @@ Wants=network-online.target
 Type=simple
 User=admin
 Group=admin
-WorkingDirectory=/home/admin
+WorkingDirectory=/home/admin/pi3b-
 EnvironmentFile=/etc/default/picam
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/env bash -lc 'source .venv/bin/activate; exec python /home/admin/run_webui.py'
+ExecStart=/usr/bin/env bash -lc 'source .venv/bin/activate; exec python /home/admin/pi3b-/run_webui.py'
 Restart=on-failure
 RestartSec=2
 
