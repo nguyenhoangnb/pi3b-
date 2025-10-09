@@ -20,18 +20,24 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from firmware.hal.wifi import WifiManager
 from firmware.hal.gpio_leds import gpioLed
 from firmware.hal.reed_switch import ReedSwitch
-
+from config.config_loader import load
 class WiFiOrchestrator:
     def __init__(self, config):
-        self.config = config
+        self.config = load("device_full.yaml")
         self.wifi_config = config.get('wifi', {})
         self.gpio_config = config.get('gpio', {})
-        
+        self.device_config = config.get('device', {})
+        self.paths_config = config.get('paths', {})
+
         # WiFi settings
         self.client_ssid = self.wifi_config.get('ssid', 'PICAM')
         self.client_password = self.wifi_config.get('password', '0123456789')
         self.ap_ssid = self.wifi_config.get('ap_ssid', 'PICAM')
         self.ap_password = self.wifi_config.get('ap_password', None)
+
+        # GPIO pins
+        self.led_wifi = self.gpio_config.get('wifi_led', 13)
+
         
         # Timing settings theo yêu cầu
         self.client_timeout = 30  # 30s để connect client
@@ -463,8 +469,8 @@ def main():
     
     config = {
         'wifi': {
-            'ssid': 'bytehome 5GHz',
-            'password': 'Toilatoi1994',
+            'ssid': 'PICAM',
+            'password': '0123456789',
             'ap_ssid': 'PICAM',
             'ap_password': None
         },
@@ -473,7 +479,7 @@ def main():
             'reed': None
         }
     }
-    
+    config_data = load("config.yaml")
     orchestrator = WiFiOrchestrator(config)
     
     try:

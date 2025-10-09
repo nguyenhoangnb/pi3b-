@@ -188,7 +188,7 @@ def set_recording(active: bool):
             if result.returncode == 0:
                 print("✓ Recording service started")
                 # Set LED
-                _gpio_set_named("record", True)
+                # _gpio_set_named("record", True)
             else:
                 print(f"⚠ Failed to start recording service: {result.stderr}")
                 _set_recording_fallback(active)
@@ -201,7 +201,7 @@ def set_recording(active: bool):
             if result.returncode == 0:
                 print("✓ Recording service stopped")
                 # Turn off LED
-                _gpio_set_named("record", False)
+                # _gpio_set_named("record", False)
             else:
                 print(f"⚠ Failed to stop recording service: {result.stderr}")
                 _set_recording_fallback(active)
@@ -215,7 +215,8 @@ def _set_recording_fallback(active: bool):
     """Fallback recording control using flag file"""
     # Bật/tắt LED ngay lập tức (ghi thực tế do service đảm nhiệm)
     try:
-        _gpio_set_named("record", bool(active))
+        # _gpio_set_named("record", bool(active))
+        pass
     except Exception:
         pass
 

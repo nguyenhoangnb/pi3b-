@@ -426,15 +426,7 @@ class VideoRecorder:
                     return False
         return False
     
-    def _restart_hls_if_needed(self):
-        """Restart HLS stream if it died"""
-        with self.hls_lock:
-            if self.hls_process and self.hls_process.poll() is not None:
-                print("⚠ HLS process died, restarting...")
-                self._stop_hls_stream_internal()
-                time.sleep(0.5)
-                return self._start_hls_stream()
-        return True
+
     
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals for safe recording stop"""
@@ -705,8 +697,6 @@ class VideoRecorder:
         """Main recording loop"""
         print("🎬 Starting recording loop...")
         
-        hls_restart_counter = 0
-        
         try:
             # Start camera
             self.camera.start()
@@ -758,15 +748,7 @@ class VideoRecorder:
                     # Write to HLS stream (without overlays for better performance)
                     # Use original frame for live view
                     if self.hls_enabled:
-                        if not self._write_frame_to_hls(frame):
-                            # Restart HLS every 100 failed writes
-                            hls_restart_counter += 1
-                            if hls_restart_counter >= 100:
-                                print("⚠ Too many HLS write failures, restarting...")
-                                self._restart_hls_if_needed()
-                                hls_restart_counter = 0
-                        else:
-                            hls_restart_counter = 0
+                        self._write_frame_to_hls(frame)
                     
                 except Exception as e:
                     print(f"⚠ Frame processing error: {e}")
@@ -939,11 +921,6 @@ def main():
         # Keep service running until interrupted
         while True:
             time.sleep(1)
-            
-            # Simple health check - restart recording if it died
-            if not recorder.is_recording:
-                print("⚠ Recording stopped unexpectedly, restarting...")
-                recorder.start_recording()
                 
     except KeyboardInterrupt:
         print("\n🛑 Service shutdown requested (SIGINT)")

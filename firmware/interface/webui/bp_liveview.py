@@ -73,35 +73,7 @@ def _mjpeg_from_v4l2(dev: str, fmt: str):
             pass
 
 
-def _ensure_recorder_running():
-    """
-    Ensure recorder service is running to provide HLS stream.
-    Returns True if service is active or successfully started.
-    """
-    # Check if recording service is already active
-    if rec_is_active():
-        print("✓ Recording service already active")
-        return True
-    
-    # Try to start the recording service
-    print("🚀 Starting recording service for live view...")
-    try:
-        set_recording(True)
-        
-        # Wait a bit for service to actually start
-        time.sleep(2.0)
-        
-        # Check if it's now active
-        if rec_is_active():
-            print("✓ Recording service started successfully")
-            return True
-        else:
-            print("⚠ Recording service failed to start")
-            return False
-        
-    except Exception as e:
-        print(f"⚠ Error starting recording service: {e}")
-        return False
+
 
 
 def _wait_for_hls_ready(timeout: float = 5.0) -> bool:
@@ -169,13 +141,10 @@ def live_mjpg():
     - If recorder service is active and HLS available: transcode from HLS
     - Otherwise: stream directly from camera
     """
-    # Try to ensure recorder service is running
-    service_started = _ensure_recorder_running()
-    
     # Determine which source to use
     use_hls = False
     
-    if service_started and rec_is_active():
+    if rec_is_active():
         # Wait for HLS to be ready (with timeout)
         if _wait_for_hls_ready(timeout=5.0):
             use_hls = True
