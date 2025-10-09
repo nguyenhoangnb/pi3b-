@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Cài đặt/refresh service cho WebUI & API từ thư mục dự án hiện tại.
-# Chạy lệnh này trong thư mục gốc dự án (chứa folder systemd/ và run_webui.py):
-#   sudo -E bash install_services.sh
 
 PROJECT_DIR="$(pwd)"
 UNIT_DIR="/etc/systemd/system"
 ENV_FILE="/etc/default/picam"
+SERVICES_FILE="${PROJECT_DIR}/services.list"
+
+echo "🚀 [PiCam Installer] Cài đặt các service từ $SERVICES_FILE"
+
+if ! [ -f "$SERVICES_FILE" ]; then
+  echo "❌ Không tìm thấy file $SERVICES_FILE"
+  exit 1
+fi
 
 echo "[+] Tạo EnvironmentFile ${ENV_FILE} (nếu chưa có)"
 sudo mkdir -p "$(dirname "$ENV_FILE")"
@@ -19,18 +24,36 @@ PICAM_API_PORT=8081
 EOF
 fi
 
-echo "[+] Copy unit files -> ${UNIT_DIR}"
-for u in picam-web.service picam-api.service; do
+# === Đọc danh sách service ===
+mapfile -t SERVICES < "$SERVICES_FILE"
+
+# === Gỡ bỏ các service cũ nếu có ===
+for u in "${SERVICES[@]}"; do
+  if systemctl list-unit-files | grep -q "$u"; then
+    echo "[−] Gỡ bỏ service cũ: $u"
+    sudo systemctl stop "$u" || true
+    sudo systemctl disable "$u" || true
+    sudo rm -f "${UNIT_DIR}/$u"
+  fi
+done
+
+sudo systemctl daemon-reload
+
+# === Cài mới ===
+for u in "${SERVICES[@]}"; do
   if [ -f "${PROJECT_DIR}/systemd/$u" ]; then
+    echo "[+] Cài service mới: $u"
     sudo install -m 0644 "${PROJECT_DIR}/systemd/$u" "${UNIT_DIR}/$u"
-    sudo systemctl unmask "$u" || true
     sudo systemctl daemon-reload
     sudo systemctl enable --now "$u"
   else
-    echo "[!] Thiếu ${PROJECT_DIR}/systemd/$u"
+    echo "[!] Thiếu file: ${PROJECT_DIR}/systemd/$u"
   fi
 done
 
 echo "[+] Trạng thái:"
-systemctl --no-pager --full status picam-web.service || true
-systemctl --no-pager --full status picam-api.service || true
+for u in "${SERVICES[@]}"; do
+  systemctl --no-pager --full status "$u" || true
+done
+
+echo "✅ Hoàn tất cài đặt dịch vụ PiCam!"
