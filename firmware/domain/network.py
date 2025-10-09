@@ -466,8 +466,8 @@ class WiFiOrchestrator:
 def main():
     """Test WiFi Orchestrator"""
     print("=== 🧭 WiFi Orchestrator Simulation ===")
-
-    config_data = load("config.yaml")
+    config_file = Path(__file__).parent.parent / 'config' / 'device_full.yaml'
+    config_data = load(config_file)
     orchestrator = WiFiOrchestrator(config_data)
     
     try:
