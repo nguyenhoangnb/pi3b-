@@ -57,3 +57,8 @@ gnss:
   enabled: True
   port: "/dev/ttyACM0"
   baud: 9600
+wifi:
+  ssid: "PICAM"
+  password: "012345678"
+  ap_ssid: "PICAM"
+  ap_password: null

@@ -4,16 +4,18 @@ import subprocess
 import re
 
 class WifiManager:
-    def __init__(self, client_ssid="PICAM", client_pass="0123456789", ssid_prefix_ap="PICAM-"):
+    def __init__(self, client_ssid="PICAM", client_pass="0123456789", ssid_prefix_ap="PICAM-", ap_password=None):
         self.client_ssid = client_ssid
         self.client_pass = client_pass
         self.ssid_prefix_ap = ssid_prefix_ap
         self.con_name = f"{self.ssid_prefix_ap}-AP"
-        self.ap_password = "12345678"
+        self.ap_password = ap_password  # None = open network, string = WPA2 password
         self.wifi_interface = None
-        self.turn_off_wifi()
+
     def _run_cmd(self, cmd):
-        return os.system(cmd) == 0
+        check = os.system(cmd)
+        time.sleep(1)
+        return check == 0
 
     def get_wifi_interface(self):
         try:
@@ -35,31 +37,6 @@ class WifiManager:
         except subprocess.CalledProcessError:
             print("✗ Failed to detect WiFi interface.")
             return None
-
-    def turn_off_wifi(self):
-        """
-        🚫 Turn off WiFi radio if it's currently enabled.
-        """
-        print("📶 Checking WiFi radio status before turning off...")
-        try:
-            result = subprocess.check_output("nmcli radio wifi", shell=True, text=True).strip()
-            if result == "enabled":
-                print("🔻 WiFi is enabled. Turning it off...")
-                if self._run_cmd("sudo nmcli radio wifi off"):
-                    time.sleep(1)
-                    print("✅ WiFi turned off successfully")
-                    return True
-                else:
-                    print("✗ Failed to turn off WiFi")
-                    return False
-            else:
-                print("⚙️ WiFi is already disabled")
-                return True
-        except subprocess.CalledProcessError:
-            print("✗ Failed to check WiFi status")
-            return False
-    
-
 
     def turn_on_wifi(self):
         """
@@ -144,17 +121,35 @@ class WifiManager:
         subprocess.run(f"sudo nmcli con delete '{self.con_name}' 2>/dev/null", shell=True)
         subprocess.run("sudo nmcli con delete 'Hotspot' 2>/dev/null", shell=True)
 
-        # Generate SSID
-        ssid_name = f"{self.ssid_prefix_ap}{os.getpid() % 1000}"
+        # Use fixed SSID name
+        ssid_name = self.ssid_prefix_ap.rstrip('-')  # Remove trailing dash, e.g., "PICAM-" → "PICAM"
 
         print(f"🛠 Creating hotspot connection (SSID: {ssid_name})...")
+        
+        # Add security settings only if password is provided
+        if self.ap_password:
+            print(f"🔒 Setting up WPA2 security with password")
+            # Create connection with password in one command
+            create_cmd = (
+                f"sudo nmcli con add type wifi ifname {self.wifi_interface} mode ap "
+                f"con-name '{self.con_name}' ssid '{ssid_name}' "
+                f"wifi-sec.key-mgmt wpa-psk wifi-sec.psk '{self.ap_password}'"
+            )
+            subprocess.run(create_cmd, shell=True)
+        else:
+            print(f"🔓 Creating open network (no password)")
+            # Create open connection
+            create_cmd = (
+                f"sudo nmcli con add type wifi ifname {self.wifi_interface} mode ap "
+                f"con-name '{self.con_name}' ssid '{ssid_name}'"
+            )
+            subprocess.run(create_cmd, shell=True)
+        
+        # Apply remaining settings
         cmds = [
-            f"sudo nmcli con add type wifi ifname {self.wifi_interface} mode ap con-name '{self.con_name}' ssid '{ssid_name}'",
             f"sudo nmcli con modify '{self.con_name}' 802-11-wireless.band bg",
             f"sudo nmcli con modify '{self.con_name}' ipv4.method shared",
-            f"sudo nmcli con modify '{self.con_name}' ipv4.addresses 192.168.4.1/24",
-            f"sudo nmcli con modify '{self.con_name}' wifi-sec.key-mgmt wpa-psk",
-            f"sudo nmcli con modify '{self.con_name}' wifi-sec.psk '{self.ap_password}'"
+            f"sudo nmcli con modify '{self.con_name}' ipv4.addresses 192.168.4.1/24"
         ]
 
         for cmd in cmds:
@@ -181,19 +176,37 @@ class WifiManager:
 
         return True
     
-    def is_client_connected(self):
-        """
-        Return True if any device is connected to the hotspot (based on ARP table).
-        """
+    def is_client_connected(self, interface=None):
+        if not isinstance(interface, str):
+            print(f"[⚠️] Interface '{interface}' không hợp lệ, dùng mặc định 'wlp0s20f3'")
+            interface = "wlp0s20f3"
+
         try:
-            result = subprocess.check_output(["arp", "-n"], text=True)
-            for line in result.splitlines():
-                match = re.search(r"(\d+\.\d+\.\d+\.\d+)\s+\S+\s+([0-9a-f:]{17})", line, re.IGNORECASE)
+            result = subprocess.check_output(["ip", "neigh", "show"], text=True)
+            lines = result.splitlines()
+
+            print(f"[ℹ️] Số dòng trong ip neigh: {len(lines)}")
+
+            for line in lines:
+                match = re.search(
+                    r"(\d+\.\d+\.\d+\.\d+)\s+dev\s+(\S+)\s+lladdr\s+([0-9a-f:]{17})",
+                    line,
+                    re.IGNORECASE,
+                )
                 if match:
-                    # Found at least one connected client
-                    return True
+                    ip, dev, mac = match.groups()
+                    if dev.lower() == interface.lower():
+                        print(f"✅ Found client: {ip} ({mac}) on {interface}")
+                        return True
+
+            print(f"❌ Không phát hiện client nào trên {interface}")
             return False
-        except subprocess.CalledProcessError:
+
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Lỗi khi chạy 'ip neigh': {e}")
+            return False
+        except Exception as e:
+            print(f"⚠️ Lỗi không mong muốn: {e}")
             return False
 
     def stop_hotspot(self):
@@ -204,16 +217,19 @@ class WifiManager:
         self._run_cmd(f"sudo nmcli con down '{self.con_name}'")
         self._run_cmd(f"sudo nmcli con delete '{self.con_name}' 2>/dev/null")
         print("✓ Hotspot stopped and removed.")
-
 def main():
     print("=== 🌐 WiFi Manager Utility ===")
     wifi = WifiManager(
         client_ssid="bytehome 5GHz", 
         client_pass="Toilatoi1994", 
-        ssid_prefix_ap="PICAM"
+        ssid_prefix_ap="PICAM",
+        ap_password=None  
     )
-
     print("✓ WiFiManager initialized")
+    if wifi.ap_password:
+        print(f"🔒 Hotspot will use password: {wifi.ap_password}")
+    else:
+        print(f"🔓 Hotspot will be OPEN (no password required)")
 
     while True:
         print("\n===== MENU =====")
@@ -225,7 +241,6 @@ def main():
         print("6. Exit")
         print("================")
         choice = input("Select option (1–6): ").strip()
-
         if choice == "1":
             print("\n📶 Turning on WiFi...")
             wifi.turn_on_wifi()
