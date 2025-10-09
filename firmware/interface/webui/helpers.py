@@ -9,14 +9,7 @@ try:
 except Exception:
     gpiod = None
 
-# Import recorder module
-try:
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-    from firmware.domain.recorder import VideoRecorder
-except Exception as e:
-    print(f"Warning: Could not import VideoRecorder: {e}")
-    VideoRecorder = None
+
     
 APPLE_RE = re.compile(r"(iPhone|iPad|iPod|Macintosh).*Safari", re.I)
 
