@@ -179,7 +179,7 @@ class WifiManager:
     def is_client_connected(self, interface=None):
         if not isinstance(interface, str):
             print(f"[⚠️] Interface '{interface}' không hợp lệ, dùng mặc định 'wlp0s20f3'")
-            interface = "wlp0s20f3"
+            interface = "wlan0"
 
         try:
             result = subprocess.check_output(["ip", "neigh", "show"], text=True)
