@@ -187,8 +187,8 @@ class WiFiOrchestrator:
             self.state = "CLIENT_CONNECTING"
         
         print(f"📱 State: CLIENT_CONNECTING → Trying to connect to {self.client_ssid} (30s timeout)")
-        
-        
+        # LED: start blinking while attempting client connection
+        self._start_led_blinking(0.5)
         
         # Start client connection
         threading.Thread(target=self._try_client_connection, daemon=True).start()
