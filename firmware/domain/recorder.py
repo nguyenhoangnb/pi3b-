@@ -2,7 +2,7 @@
 """
 Video Recording Module with LED control and overlays
 Handles automatic recording with GPS, audio, and time overlays
-FIXED: HLS streaming from single camera source
+FIXED: Direct frame queue for low-latency live view
 """
 
 import os
@@ -17,6 +17,7 @@ import subprocess
 import json
 from pathlib import Path
 import shutil
+import queue
 
 # Add project path for imports (relative to current file location)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -66,11 +67,16 @@ class VideoRecorder:
         self.recording_thread = None
         self._stop_recording = False
         
-        # HLS streaming for live view
+        # HLS streaming for live view (backup method)
         self.hls_dir = Path("/tmp/picam_hls")
         self.hls_process = None
         self.hls_enabled = True
         self.hls_lock = threading.Lock()  # Thread safety for HLS process
+        
+        # NEW: Direct live view with frame queue (lowest latency)
+        self.live_frame_queue = queue.Queue(maxsize=2)  # Keep only 2 latest frames
+        self.streaming_enabled = False
+        self.streaming_lock = threading.Lock()
         
         # Overlays
         self.enable_time_overlay = True
@@ -283,7 +289,7 @@ class VideoRecorder:
                 print(f"⚠ RTC not available: {e}")
                 self.rtc = None
             
-            # Setup HLS streaming
+            # Setup HLS streaming (backup method)
             self._setup_hls_streaming()
                 
         except Exception as e:
@@ -306,7 +312,7 @@ class VideoRecorder:
             self.hls_enabled = False
     
     def _start_hls_stream(self):
-        """Start HLS streaming process (receives frames via pipe)"""
+        """Start HLS streaming process (receives frames via pipe) - BACKUP METHOD"""
         if not self.hls_enabled:
             return False
             
@@ -337,8 +343,8 @@ class VideoRecorder:
                     "-g", str(fps * 2),  # GOP size
                     "-keyint_min", str(fps),
                     # HLS settings for low latency
-                    "-hls_time", "1",  # 1 second segments (reduced from 2)
-                    "-hls_list_size", "2",  # Keep only 2 segments (reduced from 3)
+                    "-hls_time", "1",  # 1 second segments
+                    "-hls_list_size", "2",  # Keep only 2 segments
                     "-hls_flags", "delete_segments+omit_endlist+independent_segments",
                     "-f", "hls", 
                     str(self.hls_dir / "live.m3u8")
@@ -355,11 +361,11 @@ class VideoRecorder:
                 time.sleep(0.1)
                 if self.hls_process.poll() is not None:
                     err = self.hls_process.stderr.read().decode('utf-8', errors='ignore')
-                    print(f"❌ FFmpeg failed to start: {err}")
+                    print(f"❌ FFmpeg HLS failed to start: {err}")
                     self.hls_process = None
                     return False
                 
-                print("✓ HLS streaming started (pipe mode)")
+                print("✓ HLS streaming started (backup method)")
                 return True
                 
             except Exception as e:
@@ -405,7 +411,7 @@ class VideoRecorder:
             self._stop_hls_stream_internal()
     
     def _write_frame_to_hls(self, frame):
-        """Write a frame to HLS stream (thread-safe)"""
+        """Write a frame to HLS stream (thread-safe) - BACKUP METHOD"""
         with self.hls_lock:
             if self.hls_process and self.hls_process.stdin:
                 try:
@@ -422,7 +428,58 @@ class VideoRecorder:
                     return False
         return False
     
-
+    def _update_live_frame_queue(self, frame):
+        """
+        Update live frame queue for direct streaming (LOWEST LATENCY)
+        Drop old frames if queue is full
+        """
+        if not self.streaming_enabled:
+            return
+        
+        try:
+            # Remove old frame if queue is full (non-blocking)
+            if self.live_frame_queue.full():
+                try:
+                    self.live_frame_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            
+            # Add new frame (non-blocking)
+            self.live_frame_queue.put_nowait(frame.copy())
+        except queue.Full:
+            pass  # Skip frame if queue is full
+        except Exception as e:
+            pass  # Silently ignore errors
+    
+    def enable_live_streaming(self):
+        """Enable live streaming via frame queue"""
+        with self.streaming_lock:
+            if not self.streaming_enabled:
+                self.streaming_enabled = True
+                print("✓ Live streaming enabled (direct frame queue)")
+    
+    def disable_live_streaming(self):
+        """Disable live streaming"""
+        with self.streaming_lock:
+            if self.streaming_enabled:
+                self.streaming_enabled = False
+                # Clear queue
+                while not self.live_frame_queue.empty():
+                    try:
+                        self.live_frame_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                print("✓ Live streaming disabled")
+    
+    def get_live_frame(self, timeout=1.0):
+        """
+        Get a frame from live queue for streaming
+        Returns: frame (numpy array) or None if timeout
+        """
+        try:
+            return self.live_frame_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
     
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals for safe recording stop"""
@@ -586,7 +643,7 @@ class VideoRecorder:
             return False
     
     def _create_ffmpeg_recorder_with_audio(self, filename):
-        """Create FFmpeg recording process with video and audio"""
+        """Create FFmpeg recording process with video and audio - FIXED"""
         try:
             cam_config = self.config['camera']
             audio_config = self.config['audio']
@@ -600,17 +657,25 @@ class VideoRecorder:
                 "-s", f"{cam_config['width']}x{cam_config['height']}",
                 "-r", str(cam_config['fps']),
                 "-i", "pipe:0",
-                # Audio input from ALSA
-                "-f", "pulse" if audio_config.get('device') is None else "alsa",
-                "-ac", str(audio_config['channels']),
-                "-ar", str(audio_config['sample_rate']),
             ]
             
-            # Add audio device
+            # Audio input - FIXED LOGIC
             if audio_config.get('device'):
-                cmd.extend(["-i", f"hw:{audio_config['device']}"])
+                # Use ALSA with specific device
+                cmd.extend([
+                    "-f", "alsa",
+                    "-ac", str(audio_config['channels']),
+                    "-ar", str(audio_config['sample_rate']),
+                    "-i", f"hw:{audio_config['device']}"
+                ])
             else:
-                cmd.extend(["-i", "default"])  # Use default audio device
+                # Use PulseAudio with default device
+                cmd.extend([
+                    "-f", "pulse",
+                    "-ac", str(audio_config['channels']),
+                    "-ar", str(audio_config['sample_rate']),
+                    "-i", "default"
+                ])
             
             # Encoding settings
             cmd.extend([
@@ -631,8 +696,7 @@ class VideoRecorder:
                 filename
             ])
             
-            print(f"🎬 Starting FFmpeg recording with audio: {' '.join(cmd[6:12])}...")
-            
+            print(f"🎬 Starting FFmpeg recording with audio...")
             self.current_recorder_process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -741,8 +805,11 @@ class VideoRecorder:
                         # OpenCV fallback (video only)
                         self.current_writer.write(frame_with_overlays)
                     
-                    # Write to HLS stream (without overlays for better performance)
-                    # Use original frame for live view
+                    # NEW: Update live frame queue (direct streaming - LOWEST LATENCY)
+                    # Use original frame without overlays for better performance
+                    self._update_live_frame_queue(frame)
+                    
+                    # OPTIONAL: Write to HLS stream (backup method for compatibility)
                     if self.hls_enabled:
                         self._write_frame_to_hls(frame)
                     
@@ -760,6 +827,9 @@ class VideoRecorder:
     def _cleanup_recording(self):
         """Clean up recording resources"""
         print("🧹 Cleaning up recording resources...")
+        
+        # Disable live streaming
+        self.disable_live_streaming()
         
         # Stop HLS streaming
         self._stop_hls_stream()
@@ -815,7 +885,7 @@ class VideoRecorder:
         self.is_recording = True
         self._stop_recording = False
         
-        # Start HLS streaming for live view
+        # Start HLS streaming for live view (backup method)
         self._start_hls_stream()
         
         # Start recording thread
@@ -851,6 +921,7 @@ class VideoRecorder:
             'usb_available': self.usb_manager.is_available() if self.usb_manager else False,
             'camera_active': self.camera.proc is not None if self.camera else False,
             'hls_active': self.hls_process is not None and self.hls_process.poll() is None,
+            'live_streaming_active': self.streaming_enabled,
             'audio_available': self.micro is not None and self.enable_audio,
             'recording_with_audio': self.current_recorder_process is not None,
             'current_segment_duration': 0

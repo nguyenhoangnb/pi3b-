@@ -24,9 +24,9 @@ usb:
   path: /media/ssd 
 storage:
   min_free_gb: 2
-  segment_seconds: 20
+  segment_seconds: 100
   container: mkv
-  filename_pattern: "%Y%m%d-%H%M%S.mkv"
+  filename_pattern: "%Y%m%d-%H%M%S.mp4"
 video:
   v4l2_device: "/dev/video0"
   v4l2_format: "640x480"
