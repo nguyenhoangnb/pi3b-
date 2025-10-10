@@ -598,73 +598,91 @@ class VideoRecorder:
             return False
     
     def _create_ffmpeg_recorder_with_audio(self, filename):
-        """Create FFmpeg recording process with video and audio"""
+        """Create FFmpeg recording process optimized for Raspberry Pi 3B+"""
         try:
             cam_config = self.config['camera']
-            audio_config = self.config['audio']
-            
-            # Build FFmpeg command for recording with audio
+            audio_config = self.config.get('audio', {})
+            width = cam_config.get('width', 640)
+            height = cam_config.get('height', 480)
+            fps = cam_config.get('fps', 15)
+
+            # --- Chọn thư mục lưu ---
+            base_dir = Path("/media/ssd/picam") if Path("/media/ssd/picam").exists() else Path("/home/pi/videos")
+            base_dir.mkdir(parents=True, exist_ok=True)
+            output_file = base_dir / filename
+
+            # --- Xác định thiết bị audio ---
+            use_audio = False
+            if os.path.exists("/dev/snd"):
+                use_audio = True
+
+            # --- Tạo command ---
             cmd = [
                 "ffmpeg", "-hide_banner", "-loglevel", "error",
-                # Video input from pipe
+                # Video input (pipe)
                 "-f", "rawvideo",
                 "-pix_fmt", "bgr24",
-                "-s", f"{cam_config['width']}x{cam_config['height']}",
-                "-r", str(cam_config['fps']),
+                "-s", f"{width}x{height}",
+                "-r", str(fps),
                 "-i", "pipe:0",
-                # Audio input from ALSA
-                "-f", "pulse" if audio_config.get('device') is None else "alsa",
-                "-ac", str(audio_config['channels']),
-                "-ar", str(audio_config['sample_rate']),
             ]
-            
-            # Add audio device
-            if audio_config.get('device'):
-                cmd.extend(["-i", f"hw:{audio_config['device']}"])
-            else:
-                cmd.extend(["-i", "default"])  # Use default audio device
-            
-            # Encoding settings
+
+            # --- Audio input (nếu có) ---
+            if use_audio:
+                cmd.extend([
+                    "-f", "alsa",
+                    "-ac", str(audio_config.get('channels', 1)),
+                    "-ar", str(audio_config.get('sample_rate', 16000)),
+                    "-i", audio_config.get('device', "plughw:1,0"),
+                ])
+
+            # --- Encoding settings ---
             cmd.extend([
-                # Video encoding
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "23",
+                "-c:v", "h264_v4l2m2m",       # phần cứng GPU encoder
+                "-b:v", "2M",                 # bitrate vừa phải
                 "-pix_fmt", "yuv420p",
-                # Audio encoding
-                "-c:a", "aac",
-                "-b:a", "128k",
-                # Sync settings
-                "-map", "0:v:0",  # Map video from first input
-                "-map", "1:a:0",  # Map audio from second input
+            ])
+
+            if use_audio:
+                cmd.extend([
+                    "-c:a", "aac",
+                    "-b:a", "128k",
+                    "-map", "0:v:0",
+                    "-map", "1:a:0",
+                ])
+            else:
+                cmd.append("-an")  # disable audio nếu không có mic
+
+            # --- Các tùy chọn đồng bộ ---
+            cmd.extend([
                 "-vsync", "1",
                 "-async", "1",
-                # Output
-                filename
+                "-movflags", "+faststart",
+                str(output_file)
             ])
-            
-            print(f"🎬 Starting FFmpeg recording with audio: {' '.join(cmd[6:12])}...")
-            
+
+            print(f"🎬 Starting FFmpeg optimized recording → {output_file}")
             self.current_recorder_process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                bufsize=10**7  # tăng dung lượng buffer để tránh pipe broken
             )
-            
-            # Check if process started successfully
-            time.sleep(0.2)
+
+            # --- Kiểm tra khởi động ---
+            time.sleep(0.3)
             if self.current_recorder_process.poll() is not None:
                 err = self.current_recorder_process.stderr.read().decode('utf-8', errors='ignore')
-                print(f"❌ FFmpeg recording failed to start: {err}")
+                print(f"❌ FFmpeg failed to start: {err}")
                 self.current_recorder_process = None
                 return False
-            
-            print("✓ FFmpeg recording with audio started")
+
+            print("✅ FFmpeg hardware-accelerated recording started")
             return True
-            
+
         except Exception as e:
-            print(f"⚠ FFmpeg audio recording error: {e}")
+            print(f"⚠ FFmpeg recorder error: {e}")
             return False
     
     def _create_opencv_recorder(self, filename):
