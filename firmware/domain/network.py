@@ -135,9 +135,7 @@ class WiFiOrchestrator:
         
         print(f"📱 State: CLIENT_CONNECTING → Trying to connect to {self.client_ssid} (30s timeout)")
         
-        # LED nháy 0.5s
-        if self.wifi_led:
-            self.wifi_led.blink(0.5)
+        
         
         # Start client connection
         threading.Thread(target=self._try_client_connection, daemon=True).start()
@@ -150,7 +148,9 @@ class WiFiOrchestrator:
         """Thử kết nối WiFi client"""
         try:
             success = self.wifi_manager.start_client()
-            
+            # LED nháy 0.5s
+            if self.wifi_led:
+                self.wifi_led.blink(0.5)
             if success:
                 print("✅ Client connection successful!")
                 self._transition_to_online("CLIENT")
@@ -165,7 +165,9 @@ class WiFiOrchestrator:
         
         with self.state_lock:
             current_state = self.state
-        
+        # LED nháy 0.5s
+        if self.wifi_led:
+            self.wifi_led.blink(0.5)
         if current_state == "CLIENT_CONNECTING":
             print(f"⏰ Client connection timeout (30s)")
             # Chờ thêm 10s trước khi start AP (total ~40s)
@@ -240,7 +242,8 @@ class WiFiOrchestrator:
             while not self._stop_monitor.is_set():
                 with self.state_lock:
                     current_state = self.state
-                
+                # LED nháy 0.5s
+                self.wifi_led.blink(0.5)
                 if current_state not in ["AP_READY", "ONLINE"]:
                     break
                 
@@ -265,6 +268,7 @@ class WiFiOrchestrator:
         """Transition to ONLINE state"""
         with self.state_lock:
             self.state = "ONLINE"
+        self.wifi_led.on()
         
         print(f"✅ State: ONLINE (via {source})")
         
