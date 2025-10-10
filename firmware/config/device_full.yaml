@@ -18,19 +18,17 @@ webui:
   host: "0.0.0.0"
   port: 8080
 paths:
-  record_root: /media/ssd
-  log_dir: /media/ssd
-usb: 
-  path: /media/ssd 
+  record_root: /media/hoang/UBUNTU 22_0
+  log_dir: /media/hoang/UBUNTU 22_0
 storage:
   min_free_gb: 2
-  segment_seconds: 100
+  segment_seconds: 20
   container: mkv
-  filename_pattern: "%Y%m%d-%H%M%S.mp4"
+  filename_pattern: "%Y%m%d-%H%M%S.mkv"
 video:
   v4l2_device: "/dev/video0"
   v4l2_format: "640x480"
-  v4l2_fps: 25
+  v4l2_fps: 30
 audio:
   alsa_device: null
   sample_rate: 48000
@@ -59,8 +57,3 @@ gnss:
   enabled: True
   port: "/dev/ttyACM0"
   baud: 9600
-wifi:
-  ssid: "PICAM"
-  password: "012345678"
-  ap_ssid: "PICAM"
-  ap_password: null

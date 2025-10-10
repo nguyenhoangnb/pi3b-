@@ -9,7 +9,14 @@ try:
 except Exception:
     gpiod = None
 
-
+# Import recorder module
+try:
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+    from firmware.domain.recorder import VideoRecorder
+except Exception as e:
+    print(f"Warning: Could not import VideoRecorder: {e}")
+    VideoRecorder = None
     
 APPLE_RE = re.compile(r"(iPhone|iPad|iPod|Macintosh).*Safari", re.I)
 
@@ -132,91 +139,52 @@ def list_media(p: Path) -> List[Dict[str, Any]]:
     # 200 file mới nhất
     return list(sorted(items, key=lambda x: x["name"]))[-200:][::-1]
 
-def get_recording_service_status():
-    """Get detailed recording service status"""
-    try:
-        # Get service status
-        result = subprocess.run([
-            "systemctl", "show", "picam-recorder.service",
-            "--property=ActiveState,SubState,MainPID,ExecMainStartTimestamp"
-        ], capture_output=True, text=True, timeout=5)
-        
-        if result.returncode == 0:
-            status = {}
-            for line in result.stdout.strip().split('\n'):
-                if '=' in line:
-                    key, value = line.split('=', 1)
-                    status[key] = value
-            return status
-        
-    except Exception as e:
-        print(f"⚠ Error getting service status: {e}")
-    
-    return {}
+def get_recorder():
+    """Get or create global recorder instance"""
+    global _recorder_instance
+    if _recorder_instance is None and VideoRecorder is not None:
+        try:
+            _recorder_instance = VideoRecorder()
+        except Exception as e:
+            print(f"Failed to initialize VideoRecorder: {e}")
+    return _recorder_instance
 
 def rec_is_active() -> bool:
-    """Check if recording is active by checking systemd service status"""
-    try:
-        # Check if the recording service is active
-        result = subprocess.run([
-            "systemctl", "is-active", "picam-recorder.service"
-        ], capture_output=True, text=True, timeout=5)
-        
-        # Service is active if systemctl returns "active"
-        is_service_active = result.stdout.strip() == "active"
-        
-        if is_service_active:
-            return True
-            
-        # Fallback: check flag file
-        return FLAG_REC.exists()
-        
-    except Exception as e:
-        print(f"⚠ Error checking recording status: {e}")
-        # Final fallback: check flag file
-        return FLAG_REC.exists()
+    """Check if recording is active - use recorder if available, fallback to flag file"""
+    recorder = get_recorder()
+    if recorder:
+        return recorder.is_recording
+    return FLAG_REC.exists()
 
 def set_recording(active: bool):
-    """Start/stop recording using systemd service"""
-    try:
-        if active:
-            # Start the recording service
-            result = subprocess.run([
-                "sudo", "systemctl", "start", "picam-recorder.service"
-            ], capture_output=True, text=True, timeout=10)
-            
-            if result.returncode == 0:
-                print("✓ Recording service started")
-                # Set LED
-                # _gpio_set_named("record", True)
+    """Start/stop recording using recorder or fallback to flag file"""
+    recorder = get_recorder()
+    
+    if recorder:
+        # Use the recorder instance
+        try:
+            if active:
+                result = recorder.start_recording()
+                if result:
+                    print("✓ Recording started via VideoRecorder")
+                else:
+                    print("⚠ Failed to start recording via VideoRecorder")
             else:
-                print(f"⚠ Failed to start recording service: {result.stderr}")
-                _set_recording_fallback(active)
-        else:
-            # Stop the recording service
-            result = subprocess.run([
-                "sudo", "systemctl", "stop", "picam-recorder.service"
-            ], capture_output=True, text=True, timeout=10)
-            
-            if result.returncode == 0:
-                print("✓ Recording service stopped")
-                # Turn off LED
-                # _gpio_set_named("record", False)
-            else:
-                print(f"⚠ Failed to stop recording service: {result.stderr}")
-                _set_recording_fallback(active)
-                
-    except Exception as e:
-        print(f"⚠ Error controlling recording service: {e}")
-        # Fallback to flag file method
+                recorder.stop_recording()
+                print("✓ Recording stopped via VideoRecorder")
+        except Exception as e:
+            print(f"⚠ Error controlling recorder: {e}")
+            # Fallback to flag file method
+            _set_recording_fallback(active)
+    else:
+        # Fallback to original flag file method
         _set_recording_fallback(active)
 
 def _set_recording_fallback(active: bool):
     """Fallback recording control using flag file"""
     # Bật/tắt LED ngay lập tức (ghi thực tế do service đảm nhiệm)
     try:
-        # _gpio_set_named("record", bool(active))
-        pass
+        _gpio_set_named("record", bool(active))
     except Exception:
         pass
 
