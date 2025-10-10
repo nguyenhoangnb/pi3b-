@@ -42,8 +42,8 @@ class WiFiOrchestrator:
         # Timing settings theo yêu cầu
         self.client_timeout = 30  # 30s để connect client
         self.ap_wait_timeout = 10  # 10s chờ trước khi start AP (total ~40s)
-        self.no_connection_timeout = 70  # 70s không có kết nối → OFF
-        self.auto_off_timeout = 180  # 15 phút auto-off
+        self.no_connection_timeout = 120  # 70s không có kết nối → OFF
+        self.auto_off_timeout = 600  # 15 phút auto-off
         
         # Components
         self.wifi_manager = WifiManager(
