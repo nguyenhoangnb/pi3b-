@@ -56,6 +56,10 @@ class WiFiOrchestrator:
         # LEDs and Reed switch
         self.wifi_led = None
         self.reed_switch = None
+
+        # LED blink thread control
+        self._led_blink_thread = None
+        self._led_blink_stop = threading.Event()
         
         # State management - simplified states
         self.state = "OFF"  # OFF, CLIENT_CONNECTING, AP_STARTING, AP_READY, ONLINE
@@ -94,6 +98,55 @@ class WiFiOrchestrator:
                 
         except Exception as e:
             print(f"⚠ Component initialization error: {e}")
+
+    # LED management -------------------------------------------------
+    def _led_blink_loop(self, interval: float):
+        """Background loop that toggles LED until stopped."""
+        if not self.wifi_led:
+            return
+
+        state_on = False
+        stop = self._led_blink_stop
+        try:
+            while not stop.is_set():
+                if state_on:
+                    self.wifi_led.on()
+                else:
+                    self.wifi_led.off()
+                state_on = not state_on
+                # wait supports early exit
+                stop.wait(interval)
+        except Exception as e:
+            print(f"⚠ LED blink loop error: {e}")
+
+    def _start_led_blinking(self, interval: float = 0.5):
+        """Start continuous blinking at given interval (seconds)."""
+        if not self.wifi_led:
+            return
+
+        # stop existing blink thread if any
+        self._stop_led_blinking()
+        self._led_blink_stop.clear()
+        self._led_blink_thread = threading.Thread(
+            target=self._led_blink_loop, args=(interval,), daemon=True
+        )
+        self._led_blink_thread.start()
+        print(f"⏳ WiFi LED: started blinking ({interval}s)")
+
+    def _stop_led_blinking(self):
+        """Stop continuous blinking."""
+        if not self.wifi_led:
+            return
+
+        try:
+            if self._led_blink_thread and self._led_blink_thread.is_alive():
+                self._led_blink_stop.set()
+                # give it a short moment to finish
+                self._led_blink_thread.join(timeout=0.5)
+        except Exception:
+            pass
+        self._led_blink_thread = None
+
     
     def _reed_triggered(self):
         """Reed switch callback - start WiFi sequence"""
@@ -148,9 +201,8 @@ class WiFiOrchestrator:
         """Thử kết nối WiFi client"""
         try:
             success = self.wifi_manager.start_client()
-            # LED nháy 0.5s
-            if self.wifi_led:
-                self.wifi_led.blink(0.5)
+            # LED: handled by blink thread; ensure we're blinking while waiting
+            # (no-op here)
             if success:
                 print("✅ Client connection successful!")
                 self._transition_to_online("CLIENT")
@@ -165,9 +217,7 @@ class WiFiOrchestrator:
         
         with self.state_lock:
             current_state = self.state
-        # LED nháy 0.5s
-        if self.wifi_led:
-            self.wifi_led.blink(0.5)
+        # keep blinking while waiting; nothing to do here
         if current_state == "CLIENT_CONNECTING":
             print(f"⏰ Client connection timeout (30s)")
             # Chờ thêm 10s trước khi start AP (total ~40s)
@@ -182,9 +232,8 @@ class WiFiOrchestrator:
         
         print(f"📡 State: AP_STARTING → Starting hotspot")
         
-        # LED nháy nhanh 0.25s
-        if self.wifi_led:
-            self.wifi_led.blink(0.25)
+        # Ensure blink thread is running (faster blink for AP_STARTING)
+        self._start_led_blinking(0.25)
         
         # Get WiFi serial SSID
         ap_ssid = self._get_wifi_serial_ssid()
@@ -225,6 +274,8 @@ class WiFiOrchestrator:
                 print("✅ State: AP_READY → Hotspot active, waiting for clients")
                 
                 # Start monitoring for clients
+                # AP_READY should blink slowly while waiting for clients
+                self._start_led_blinking(0.5)
                 self._start_ap_client_monitoring()
             else:
                 print("✗ Failed to start AP hotspot")
@@ -242,8 +293,7 @@ class WiFiOrchestrator:
             while not self._stop_monitor.is_set():
                 with self.state_lock:
                     current_state = self.state
-                # LED nháy 0.5s
-                self.wifi_led.blink(0.5)
+                # LED handled by blink thread while waiting
                 if current_state not in ["AP_READY", "ONLINE"]:
                     break
                 
@@ -268,7 +318,10 @@ class WiFiOrchestrator:
         """Transition to ONLINE state"""
         with self.state_lock:
             self.state = "ONLINE"
-        self.wifi_led.on()
+        # Stop blinking and set steady ON
+        self._stop_led_blinking()
+        if self.wifi_led:
+            self.wifi_led.on()
         
         print(f"✅ State: ONLINE (via {source})")
         
@@ -276,10 +329,6 @@ class WiFiOrchestrator:
         if self.no_connection_timer:
             self.no_connection_timer.cancel()
             self.no_connection_timer = None
-        
-        # LED sáng đứng
-        if self.wifi_led:
-            self.wifi_led.on()
         
         print("💡 WiFi LED: ON (connected)")
         
@@ -294,10 +343,8 @@ class WiFiOrchestrator:
         with self.state_lock:
             self.state = "AP_READY"
         
-        # LED nháy chậm
-        if self.wifi_led:
-            self.wifi_led.blink(0.5)
-        
+        # LED should blink slowly while waiting
+        self._start_led_blinking(0.5)
         print("💡 WiFi LED: BLINK (waiting for client)")
     
     def _start_no_connection_timer(self):
@@ -371,6 +418,8 @@ class WiFiOrchestrator:
             print(f"⚠ Error turning off WiFi: {e}")
         
         # Turn off LED
+        # Stop blinking and turn off LED
+        self._stop_led_blinking()
         if self.wifi_led:
             self.wifi_led.off()
             print("💡 WiFi LED: OFF")
@@ -395,6 +444,8 @@ class WiFiOrchestrator:
             self.auto_off_timer = None
         
         self._stop_monitor.set()
+        # ensure led blinking stopped when cancelling timers
+        self._stop_led_blinking()
     
     def start(self):
         """Start WiFi orchestrator"""

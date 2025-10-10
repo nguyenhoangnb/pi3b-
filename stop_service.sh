@@ -4,7 +4,7 @@
 # Each line in services.list already contains .service
 # --------------------------------------------------
 
-SERVICES_FILE="/home/admin/pi3-/services.list"
+SERVICES_FILE="/home/admin/pi3b-/services.list"
 
 # Kiểm tra file tồn tại
 if [ ! -f "$SERVICES_FILE" ]; then
