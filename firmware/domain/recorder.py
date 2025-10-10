@@ -629,11 +629,16 @@ class VideoRecorder:
 
             # --- Audio input (nếu có) ---
             if use_audio:
+                # Ensure audio device string is valid
+                audio_device = audio_config.get('device') or "plughw:1,0"
+                # Defensive: convert None to default string
+                if audio_device is None:
+                    audio_device = "plughw:1,0"
                 cmd.extend([
                     "-f", "alsa",
                     "-ac", str(audio_config.get('channels', 1)),
                     "-ar", str(audio_config.get('sample_rate', 16000)),
-                    "-i", audio_config.get('device', "plughw:1,0"),
+                    "-i", str(audio_device),
                 ])
 
             # --- Encoding settings ---
