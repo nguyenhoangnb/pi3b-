@@ -234,7 +234,7 @@ class VideoRecorder:
                 min_free_percent=usb_config['min_free_percent']
             )
             print("✓ USB Manager initialized")
-            
+            print("USB config path", usb_config["path"])
             # Record LED
             led_pin = self.config['leds']['record_led_pin']
             self.record_led = gpioLed(led_pin)
