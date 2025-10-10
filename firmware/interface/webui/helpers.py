@@ -9,14 +9,14 @@ try:
 except Exception:
     gpiod = None
 
-# Import recorder module
-try:
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-    from firmware.domain.recorder import VideoRecorder
-except Exception as e:
-    print(f"Warning: Could not import VideoRecorder: {e}")
-    VideoRecorder = None
+# # Import recorder module
+# try:
+#     import sys
+#     sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+#     from firmware.domain.recorder import VideoRecorder
+# except Exception as e:
+#     print(f"Warning: Could not import VideoRecorder: {e}")
+#     VideoRecorder = None
     
 APPLE_RE = re.compile(r"(iPhone|iPad|iPod|Macintosh).*Safari", re.I)
 
@@ -27,6 +27,45 @@ FLAG_REC = Path("/tmp/picam.recorder.active")
 _recorder_instance = None
 
 _gpio_lines = {}  # cache {name: (line, active_low)}
+
+def run_command(cmd):
+    """Chạy lệnh shell và trả về stdout + stderr"""
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        return result.stdout.strip(), result.stderr.strip()
+    except Exception as e:
+        return "", str(e)
+
+
+def check_service(service):
+    """Kiểm tra trạng thái service"""
+    out, err = run_command(["systemctl", "is-active", service])
+    return out
+
+
+def start_service(service):
+    """Start service"""
+    print(f"▶️ Starting {service} ...")
+    _, err = run_command(["sudo", "systemctl", "start", service])
+    if err:
+        print(f"⚠ Error starting {service}: {err}")
+    else:
+        print(check_service(service))
+
+
+def stop_service(service):
+    """Stop service"""
+    print(f"⏹ Stopping {service} ...")
+    _, err = run_command(["sudo", "systemctl", "stop", service])
+    if err:
+        print(f"⚠ Error stopping {service}: {err}")
+    else:
+        print(check_service(service))
 
 def _gpio_request_line(pin: int):
     # Nếu có gpiod thì request line, nếu không có thì trả None để fallback raspi-gpio
@@ -141,19 +180,16 @@ def list_media(p: Path) -> List[Dict[str, Any]]:
 
 def get_recorder():
     """Get or create global recorder instance"""
-    global _recorder_instance
-    if _recorder_instance is None and VideoRecorder is not None:
-        try:
-            _recorder_instance = VideoRecorder()
-        except Exception as e:
-            print(f"Failed to initialize VideoRecorder: {e}")
-    return _recorder_instance
+    status = check_service("picam-recorder")
+    if status == "active":
+        return True
+    return False
 
 def rec_is_active() -> bool:
     """Check if recording is active - use recorder if available, fallback to flag file"""
     recorder = get_recorder()
     if recorder:
-        return recorder.is_recording
+        return recorder
     return FLAG_REC.exists()
 
 def set_recording(active: bool):
@@ -164,13 +200,13 @@ def set_recording(active: bool):
         # Use the recorder instance
         try:
             if active:
-                result = recorder.start_recording()
-                if result:
+                start_service("picam-recorder")
+                if rec_is_active():
                     print("✓ Recording started via VideoRecorder")
                 else:
                     print("⚠ Failed to start recording via VideoRecorder")
             else:
-                recorder.stop_recording()
+                stop_service("picam-recorder")
                 print("✓ Recording stopped via VideoRecorder")
         except Exception as e:
             print(f"⚠ Error controlling recorder: {e}")
