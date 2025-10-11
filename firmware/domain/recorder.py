@@ -545,29 +545,30 @@ class VideoRecorder:
             audio_ch = self.config['audio'].get('channels', 1)
             cmd.extend([
                 "-f", "alsa",
-                "-thread_queue_size", "1024",  # Large buffer to prevent blocking
+                "-thread_queue_size", "512",
                 "-ac", str(audio_ch),
                 "-ar", str(audio_rate),
-                "-i", audio_device,  # Audio input
+                "-i", audio_device,
                 "-c:a", "aac",
                 "-b:a", "128k",
-                "-map", "0:v:0",  # Map video from pipe
-                "-map", "1:a:0",   # Map audio from ALSA
-                "-async", "1",  # Audio sync method - resample audio to match video
-                "-vsync", "2"  # Video sync method - passthrough timestamps
+                "-map", "0:v:0",
+                "-map", "1:a:0"
             ])
             print(f"✓ Audio enabled: {audio_device}")
         else:
-            cmd.append("-an")  # No audio
+            cmd.extend(["-an"])
             print("ℹ Audio disabled")
 
         # Video encoding - use software encoder for stability
         cmd.extend([
-            "-c:v", "libx264",  # Software encoder (more stable than h264_v4l2m2m)
-            "-preset", "ultrafast",  # Fast encoding for real-time
-            "-tune", "zerolatency",  # Low latency
-            "-b:v", "1M",  # Lower bitrate for Pi3B+
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-tune", "zerolatency",
+            "-b:v", "1M",
             "-pix_fmt", "yuv420p",
+            "-shortest",  # Stop when shortest input ends (video or audio)
+            "-fflags", "+genpts",  # Generate presentation timestamps
+            "-max_interleave_delta", "0",  # Don't wait for audio/video sync
             str(output_file)
         ])
 

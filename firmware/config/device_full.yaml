@@ -6,7 +6,7 @@ device:
   fw_version: "0.2.0"
 capabilities:
   video: True
-  audio: False
+  audio: True  # Enable audio
   gnss: True
   storage: True
 api:
@@ -29,8 +29,9 @@ video:
   v4l2_format: "640x480"
   v4l2_fps: 30
 audio:
-  device: null
+  device: "plughw:1,0"  # USB Audio Device (card 1)
   sample_rate: 48000
+  channels: 1
 overlay:
   timestamp_font: "/usr/share/fonts/Truetype/dejavu/DejaVuSansMono.ttf"
   timestamp_size: 24
