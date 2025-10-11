@@ -169,7 +169,7 @@ def live_mjpg():
         gen = _mjpeg_from_hls()
     else:
         dev = cfg_get("video.v4l2_device", "/dev/video0")
-        fmt = cfg_get("video.v4l2_format", "1280x720")
+        fmt = cfg_get("video.v4l2_format", "640x480")  # Use config default, camera supports this
         gen = _mjpeg_from_v4l2(dev, fmt)
     
     return Response(
