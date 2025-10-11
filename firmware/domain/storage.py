@@ -161,7 +161,7 @@ if __name__ == "__main__":
     audio = AudioRecorder()
 
     video.start()
-    audio.start()
+    audio.record()
 
     record_seconds = 10
     time.sleep(record_seconds)
