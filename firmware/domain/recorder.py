@@ -378,6 +378,8 @@ class VideoRecorder:
     def _should_create_new_segment(self):
         if not self.segment_start_time:
             return True
+        t = time.time() - self.segment_start_time
+        print("Time: ", t)
         return (time.time() - self.segment_start_time) >= self.segment_duration
     # ---------------- HLS STREAM ----------------
     def _setup_hls_streaming(self):
