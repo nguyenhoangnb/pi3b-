@@ -18,13 +18,16 @@ from firmware.hal.gnss import GNSSModule
 from firmware.hal.rtc import rtcModule
 from firmware.config.config_loader import load
 
-# Fallback nếu không có ffmpeg-python
+# Check if ffmpeg is available
 try:
-    import ffmpeg
+    # Check ffmpeg command availability
+    subprocess.run(['ffmpeg', '-version'], 
+                  capture_output=True, 
+                  check=True)
     FFMPEG_AVAILABLE = True
-except ImportError:
+except (subprocess.SubprocessError, FileNotFoundError):
     FFMPEG_AVAILABLE = False
-    print("⚠ ffmpeg-python not installed, HLS streaming disabled")
+    print("⚠ FFmpeg not installed, video conversion and HLS disabled")
 
 class VideoRecorder:
     def __init__(self, config=None):
@@ -185,14 +188,20 @@ class VideoRecorder:
         # Setup HLS streaming
         self._setup_hls()
         
-        # Check storage space
+        # Check and wait for USB storage
         if hasattr(self, 'usb_manager'):
             if not self.usb_manager.is_available():
                 print("⚠ USB not available")
-                return False
-            if not self.usb_manager.has_enough_space():
+                self.usb_manager.wait_until_available()
+            
+            while not self.usb_manager.has_enough_space():
                 print("⚠ Not enough storage space")
-                return False
+                self.usb_manager.cleanup_old_files()
+                if not self.usb_manager.has_enough_space():
+                    print("❌ Could not free enough space")
+                    return False
+                
+            print("✓ Storage ready")
 
         # Turn on record LED
         if hasattr(self, 'record_led'):
@@ -286,54 +295,60 @@ class VideoRecorder:
     def _convert_to_mp4(self, video_file, audio_file=None):
         """Convert video to MP4, optionally merging with audio"""
         try:
-            if not FFMPEG_AVAILABLE:
-                print("⚠ FFmpeg not available, cannot convert video")
-                return False
-
             output_file = video_file.with_suffix('.mp4')
             
             if audio_file and self.audio_enabled:
-                # Merge video and audio
-                stream = (
-                    ffmpeg
-                    .input(str(video_file))
-                    .input(str(audio_file))
-                    .output(str(output_file),
-                        vcodec='copy',     # Copy video stream without re-encoding
-                        acodec='aac',      # Convert audio to AAC
-                        strict='experimental',
-                        loglevel='error'
-                    )
-                    .overwrite_output()
-                )
+                # Merge video and audio using ffmpeg command
+                cmd = [
+                    'ffmpeg',
+                    '-i', str(video_file),
+                    '-i', str(audio_file),
+                    '-c:v', 'copy',
+                    '-c:a', 'aac',
+                    '-strict', 'experimental',
+                    '-loglevel', 'error',
+                    '-y',
+                    str(output_file)
+                ]
                 
                 # Run FFmpeg
-                stream.run(capture_stdout=True, capture_stderr=True)
+                process = subprocess.run(cmd, 
+                                      capture_output=True, 
+                                      text=True)
                 
-                # Remove original files after successful merge
-                video_file.unlink()
-                audio_file.unlink()
-                print(f"✓ Created MP4 with audio: {output_file}")
+                if process.returncode == 0:
+                    # Remove original files after successful merge
+                    video_file.unlink()
+                    audio_file.unlink()
+                    print(f"✓ Created MP4 with audio: {output_file}")
+                else:
+                    print(f"⚠ FFmpeg error: {process.stderr}")
+                    return False
                 
             else:
                 # Just convert video to MP4 without audio
-                stream = (
-                    ffmpeg
-                    .input(str(video_file))
-                    .output(str(output_file),
-                        vcodec='copy',  # Copy video stream without re-encoding
-                        an=None,        # No audio
-                        loglevel='error'
-                    )
-                    .overwrite_output()
-                )
+                cmd = [
+                    'ffmpeg',
+                    '-i', str(video_file),
+                    '-c:v', 'copy',
+                    '-an',
+                    '-loglevel', 'error',
+                    '-y',
+                    str(output_file)
+                ]
                 
                 # Run FFmpeg
-                stream.run(capture_stdout=True, capture_stderr=True)
+                process = subprocess.run(cmd, 
+                                      capture_output=True, 
+                                      text=True)
                 
-                # Remove original file after successful conversion
-                video_file.unlink()
-                print(f"✓ Created MP4: {output_file}")
+                if process.returncode == 0:
+                    # Remove original file after successful conversion
+                    video_file.unlink()
+                    print(f"✓ Created MP4: {output_file}")
+                else:
+                    print(f"⚠ FFmpeg error: {process.stderr}")
+                    return False
             
             return True
             
@@ -343,14 +358,23 @@ class VideoRecorder:
 
     def _create_new_segment(self):
         """Create new video and audio segment"""
-        # Check storage space
+        # Check storage space and handle USB events
         if hasattr(self, 'usb_manager'):
-            if not self.usb_manager.is_available():
-                print("⚠ USB not available")
-                return False
-            if not self.usb_manager.has_enough_space():
-                print("⚠ Not enough storage space")
-                return False
+            # Wait until USB is available
+            while self.is_recording and not self.usb_manager.is_available():
+                print("⚠ USB disconnected during recording")
+                self.usb_manager.wait_until_available()
+                if not self.is_recording:
+                    return False
+            
+            # Try to free up space if needed
+            while self.is_recording and not self.usb_manager.has_enough_space():
+                print("⚠ Storage space low, cleaning up...")
+                self.usb_manager.cleanup_old_files()
+                if not self.usb_manager.has_enough_space():
+                    print("❌ Could not free enough space")
+                    self.stop_recording()
+                    return False
 
         # Close current video writer
         if hasattr(self, 'video_writer'):
@@ -401,6 +425,14 @@ class VideoRecorder:
         self.segment_start_time = time.time()
         
         while self.is_recording:
+            # Check USB status periodically
+            if hasattr(self, 'usb_manager'):
+                if not self.usb_manager.is_available():
+                    print("⚠ USB disconnected during recording")
+                    self.usb_manager.wait_until_available()
+                    if not self.is_recording:
+                        break
+            
             # Check if need to create new segment
             if self._should_create_new_segment():
                 if not self._create_new_segment():
@@ -436,10 +468,12 @@ class VideoRecorder:
         """Initialize hardware components"""
         try:
             # USB Storage Manager
+            # Initialize USB manager with config values
             self.usb_manager = USBManager(
                 path=self.config['storage']['path'],
-                min_free_gb=1.0,
-                min_free_percent=10
+                min_free_gb=self.config.get('storage', {}).get('min_free_gb', 1.0),
+                min_free_percent=self.config.get('storage', {}).get('min_free_percent', 10),
+                camera_id=self.config.get('device', {}).get('id', 1)
             )
             print("✓ USB Manager initialized")
 
