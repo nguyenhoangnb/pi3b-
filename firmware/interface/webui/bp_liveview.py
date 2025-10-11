@@ -38,38 +38,6 @@ def _mjpeg_from_hls():
             pass
 
 
-def _mjpeg_from_v4l2(dev: str, fmt: str):
-    """Stream MJPEG directly from camera"""
-    try:
-        # Parse width and height from format string (e.g., "1280x720")
-        width, height = fmt.split('x')
-        
-        process = (
-            ffmpeg
-            .input(dev, format='v4l2', input_format='yuyv422', 
-                   framerate=15, video_size=fmt)
-            .output('pipe:', format='mpjpeg', **{
-                'q:v': 7,
-                'pix_fmt': 'yuvj422p',
-                'boundary_tag': 'frame'
-            })
-            .global_args('-hide_banner', '-loglevel', 'error')
-            .run_async(pipe_stdout=True, pipe_stderr=True)
-        )
-        
-        while True:
-            chunk = process.stdout.read(4096)
-            if not chunk:
-                break
-            yield chunk
-    finally:
-        try:
-            process.kill()
-            process.wait()
-        except:
-            pass
-
-
 def _ensure_recorder_running():
     """
     Check if recorder is running to provide HLS stream.
@@ -144,33 +112,32 @@ def hls_files(name: str):
 @bp.get("/live.mjpg")
 def live_mjpg():
     """
-    Serve live MJPEG stream.
-    - If recorder is active and HLS available: transcode from HLS
-    - Otherwise: stream directly from camera
+    Serve live MJPEG stream from HLS only.
+    Returns error if HLS is not available (recorder must be running).
     """
-    # Try to ensure recorder is running
+    # Check if recorder is running
     recorder_started = _ensure_recorder_running()
     
-    # Determine which source to use
-    use_hls = False
+    if not recorder_started or not rec_is_active():
+        print("❌ Recorder not active, cannot stream")
+        return Response(
+            "Recorder is not active. Please start recording first.",
+            status=503,
+            mimetype="text/plain"
+        )
     
-    if recorder_started and rec_is_active():
-        # Wait for HLS to be ready (with timeout)
-        if _wait_for_hls_ready(timeout=3.0):
-            use_hls = True
-            print("📹 Using HLS source for MJPEG")
-        else:
-            print("⚠ HLS not ready, falling back to V4L2")
-    else:
-        print("ℹ Recorder not active, using V4L2 directly")
+    # Wait for HLS to be ready
+    if not _wait_for_hls_ready(timeout=5.0):
+        print("❌ HLS not ready after 5s")
+        return Response(
+            "HLS stream not ready. Please wait for recorder to initialize.",
+            status=503,
+            mimetype="text/plain"
+        )
     
-    # Generate MJPEG stream
-    if use_hls:
-        gen = _mjpeg_from_hls()
-    else:
-        dev = cfg_get("video.v4l2_device", "/dev/video0")
-        fmt = cfg_get("video.v4l2_format", "640x480")  # Use config default, camera supports this
-        gen = _mjpeg_from_v4l2(dev, fmt)
+    # Generate MJPEG stream from HLS
+    print("📹 Streaming MJPEG from HLS")
+    gen = _mjpeg_from_hls()
     
     return Response(
         gen,
