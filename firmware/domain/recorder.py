@@ -583,94 +583,95 @@ class VideoRecorder:
         """Create FFmpeg recording process optimized for Raspberry Pi 3B+"""
         try:
             cam_config = self.config['camera']
-            width = cam_config['width']
-            height = cam_config['height']
-            fps = cam_config['fps']
-            
-            # Build FFmpeg command
-            ffmpeg_cmd = [
-                'ffmpeg',
-                '-y',  # Overwrite output
-                '-f', 'rawvideo',
-                '-vcodec', 'rawvideo',
-                '-pix_fmt', 'bgr24',
-                '-s', f'{width}x{height}',
-                '-r', str(fps),
-                '-i', '-',  # stdin for video
+            audio_config = self.config.get('audio', {})
+            width = cam_config.get('width', 640)
+            height = cam_config.get('height', 480)
+            fps = cam_config.get('fps', 15)
+
+            # --- Chọn thư mục lưu ---
+            base_dir = Path("/media/ssd/picam") if Path("/media/ssd/picam").exists() else Path("/home/pi/videos")
+            base_dir.mkdir(parents=True, exist_ok=True)
+            output_file = base_dir / filename
+
+            # --- Xác định thiết bị audio ---
+            use_audio = False
+            if os.path.exists("/dev/snd"):
+                use_audio = True
+
+            # --- Tạo command ---
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                # Video input (pipe)
+                "-f", "rawvideo",
+                "-pix_fmt", "bgr24",
+                "-s", f"{width}x{height}",
+                "-r", str(fps),
+                "-i", "pipe:0",
             ]
-            
-            # Add audio input if available
-            audio_enabled = False
-            if self.enable_audio and self.micro and self.micro.check_device_available():
-                # Get audio device, fallback to 'default' if None or empty
-                audio_device = self.config.get('audio', {}).get('device')
-                if not audio_device:  # None or empty string
-                    audio_device = 'default'  # Use ALSA default device
-                
-                try:
-                    ffmpeg_cmd.extend([
-                        '-f', 'alsa',
-                        '-i', audio_device,
-                        '-ac', '1',  # Mono
-                        '-ar', '16000',  # 16kHz sample rate
-                    ])
-                    audio_enabled = True
-                    print(f"✓ Audio enabled: {audio_device}")
-                except Exception as e:
-                    print(f"⚠ Failed to add audio: {e}")
-            else:
-                print("⚠ Audio disabled or not available")
-            
-            # Video encoding settings for Pi 3B+
-            ffmpeg_cmd.extend([
-                '-c:v', 'libx264',
-                '-preset', 'ultrafast',
-                '-tune', 'zerolatency',
-                '-crf', '28',
-                '-maxrate', '2M',
-                '-bufsize', '4M',
-                '-g', str(fps * 2),
-                '-pix_fmt', 'yuv420p',
-            ])
-            
-            # Audio encoding if audio is present
-            if audio_enabled:
-                ffmpeg_cmd.extend([
-                    '-c:a', 'aac',
-                    '-b:a', '64k',
+
+            # --- Audio input (nếu có) ---
+            if use_audio:
+                # Ensure audio device string is valid
+                audio_device = audio_config.get('device') or "plughw:1,0"
+                # Defensive: convert None to default string
+                if audio_device is None:
+                    audio_device = "plughw:1,0"
+                cmd.extend([
+                    "-f", "alsa",
+                    "-ac", str(audio_config.get('channels', 1)),
+                    "-ar", str(audio_config.get('sample_rate', 16000)),
+                    "-i", str(audio_device),
                 ])
-            
-            # Output file
-            ffmpeg_cmd.extend([
-                '-f', 'mp4',
-                '-movflags', '+faststart',
-                filename
+
+            # --- Encoding settings ---
+            cmd.extend([
+                "-c:v", "h264_v4l2m2m",       # phần cứng GPU encoder
+                "-b:v", "2M",                 # bitrate vừa phải
+                "-pix_fmt", "yuv420p",
             ])
-            
-            print(f"🎬 Starting FFmpeg: {' '.join(ffmpeg_cmd)}")
-            
+
+            if use_audio:
+                cmd.extend([
+                    "-c:a", "aac",
+                    "-b:a", "128k",
+                    "-map", "0:v:0",
+                    "-map", "1:a:0",
+                ])
+            else:
+                cmd.append("-an")  # disable audio nếu không có mic
+
+            # --- Các tùy chọn đồng bộ ---
+            cmd.extend([
+                "-vsync", "1",
+                "-async", "1",
+                "-movflags", "+faststart",
+                str(output_file)
+            ])
+
+            print(f"🎬 Starting FFmpeg optimized recording → {output_file}")
             self.current_recorder_process = subprocess.Popen(
-                ffmpeg_cmd,
+                cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE  # Changed to PIPE to capture errors
+                stderr=subprocess.PIPE,
+                bufsize=10**7  # tăng dung lượng buffer để tránh pipe broken
             )
-            
-            # Check if process started
+
+            # --- Kiểm tra khởi động ---
             time.sleep(0.3)
             if self.current_recorder_process.poll() is not None:
-                stderr = self.current_recorder_process.stderr.read().decode('utf-8', errors='ignore')
-                print(f"✗ FFmpeg process died immediately: {stderr}")
+                err = self.current_recorder_process.stderr.read().decode('utf-8', errors='ignore')
+                print(f"❌ FFmpeg failed to start: {err}")
+                self.current_recorder_process = None
                 return False
 
-            print("✅ FFmpeg recording started")
+            print("✅ FFmpeg hardware-accelerated recording started")
             return True
 
         except Exception as e:
             print(f"⚠ FFmpeg recorder error: {e}")
-            import traceback
-            traceback.print_exc()
             return False
+    
     
     def _should_create_new_segment(self):
         """Check if we should create a new segment"""
