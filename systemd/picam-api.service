@@ -10,20 +10,18 @@ Group=admin
 WorkingDirectory=/home/admin/pi3b-
 EnvironmentFile=/etc/default/picam
 
-# ✅ Kích hoạt môi trường ảo và chạy uvicorn
-ExecStart=/usr/bin/bash -c '
-cd /home/admin/pi3b- &&
-source .venv/bin/activate &&
+# ✅ Kích hoạt môi trường ảo và chạy Uvicorn trong một dòng bash an toàn
+ExecStart=/usr/bin/bash -c "cd /home/admin/pi3b- && \
+source .venv/bin/activate && \
 exec uvicorn firmware.interface.api_fastapi:app \
     --host 0.0.0.0 \
-    --port ${PICAM_API_PORT:-8081}
-'
+    --port \${PICAM_API_PORT:-8081}"
 
-# Tự khởi động lại khi lỗi
+# ✅ Tự khởi động lại khi lỗi
 Restart=on-failure
 RestartSec=3
 
-# Ghi log trực tiếp vào journalctl
+# ✅ Ghi log trực tiếp vào journalctl
 StandardOutput=journal
 StandardError=journal
 

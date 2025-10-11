@@ -24,10 +24,8 @@ PICAM_API_PORT=8081
 EOF
 fi
 
-# === Đọc danh sách service ===
 mapfile -t SERVICES < "$SERVICES_FILE"
 
-# === Gỡ bỏ các service cũ nếu có ===
 for u in "${SERVICES[@]}"; do
   if systemctl list-unit-files | grep -q "$u"; then
     echo "[−] Gỡ bỏ service cũ: $u"
@@ -37,18 +35,26 @@ for u in "${SERVICES[@]}"; do
   fi
 done
 
+echo "[+] Cài các service mới..."
+for u in "${SERVICES[@]}"; do
+  SRC="${PROJECT_DIR}/systemd/$u"
+  DST="${UNIT_DIR}/$u"
+  if [ -f "$SRC" ]; then
+    echo "→ Cài $u"
+    sudo install -m 0644 "$SRC" "$DST"
+    sudo systemd-analyze verify "$DST" || {
+      echo "❌ $u có lỗi cú pháp — bỏ qua"
+      continue
+    }
+  else
+    echo "[!] Thiếu file: $SRC"
+  fi
+done
+
 sudo systemctl daemon-reload
 
-# === Cài mới ===
 for u in "${SERVICES[@]}"; do
-  if [ -f "${PROJECT_DIR}/systemd/$u" ]; then
-    echo "[+] Cài service mới: $u"
-    sudo install -m 0644 "${PROJECT_DIR}/systemd/$u" "${UNIT_DIR}/$u"
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now "$u"
-  else
-    echo "[!] Thiếu file: ${PROJECT_DIR}/systemd/$u"
-  fi
+  sudo systemctl enable --now "$u" || true
 done
 
 echo "[+] Trạng thái:"

@@ -364,32 +364,32 @@ fi
 # ----------------------------------------------------------------------------
 # [BỔ SUNG] Tạo service picam-web.service mặc định nếu chưa có file unit
 # ----------------------------------------------------------------------------
-if [[ ! -f /etc/systemd/system/picam-web.service ]]; then
-  log "Tạo picam-web.service mặc định (nếu repo không cung cấp sẵn)"
-  cat > /etc/systemd/system/picam-web.service <<'UNIT'
-[Unit]
-Description=PiCam WebUI (Flask)
-After=network-online.target
-Wants=network-online.target
+# if [[ ! -f /etc/systemd/system/picam-web.service ]]; then
+#   log "Tạo picam-web.service mặc định (nếu repo không cung cấp sẵn)"
+#   cat > /etc/systemd/system/picam-web.service <<'UNIT'
+# [Unit]
+# Description=PiCam WebUI (Flask)
+# After=network-online.target
+# Wants=network-online.target
 
-[Service]
-User=admin
-WorkingDirectory=/home/admin
-EnvironmentFile=/etc/default/picam
-ExecStart=/usr/bin/python3 /home/admin/run_webui.py
-Restart=on-failure
+# [Service]
+# User=admin
+# WorkingDirectory=/home/admin
+# EnvironmentFile=/etc/default/picam
+# ExecStart=/usr/bin/python3 /home/admin/run_webui.py
+# Restart=on-failure
 
-[Install]
-WantedBy=multi-user.target
-UNIT
+# [Install]
+# WantedBy=multi-user.target
+# UNIT
 
-  systemctl daemon-reload
-  systemctl enable --now picam-web.service || true
-fi
+#   systemctl daemon-reload
+#   systemctl enable --now picam-web.service || true
+# fi
 
-# Bật recorder mặc định (Record ON)
-sudo systemctl enable --now picam-recorder.service || true
+# # Bật recorder mặc định (Record ON)
+# sudo systemctl enable --now picam-recorder.service || true
 
-# Cho phép admin điều khiển service recorder qua WebUI (không hỏi sudo password)
-echo 'admin ALL=(root) NOPASSWD: /bin/systemctl start picam-recorder.service, /bin/systemctl stop picam-recorder.service' | sudo tee /etc/sudoers.d/picam-rec-ctl >/dev/null
-sudo visudo -c || true
+# # Cho phép admin điều khiển service recorder qua WebUI (không hỏi sudo password)
+# echo 'admin ALL=(root) NOPASSWD: /bin/systemctl start picam-recorder.service, /bin/systemctl stop picam-recorder.service' | sudo tee /etc/sudoers.d/picam-rec-ctl >/dev/null
+# sudo visudo -c || true
