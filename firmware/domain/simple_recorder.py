@@ -581,27 +581,43 @@ class VideoRecorder:
 
 
 if __name__ == "__main__":
-    # Example usage
-    config = {
-        'camera': {
-            'device': '/dev/video0',
-            'width': 640,
-            'height': 480,
-            'fps': 30,
-            'fourcc': 'MJPG'
-        },
-        'audio': {
-            'enabled': True,
-            'channels': 1,
-            'rate': 44100
-        },
-        'storage': {
-            'path': '/media/ssd'
-        }
-    }
-    
+    # Load config from YAML file
     try:
-        recorder = VideoRecorder(config)
+        config = load("firmware/config/device_full.yaml")
+        
+        # Map config values from YAML to recorder config structure
+        recorder_config = {
+            'camera': {
+                'device': config['video']['v4l2_device'],
+                'width': int(config['video']['v4l2_format'].split('x')[0]),
+                'height': int(config['video']['v4l2_format'].split('x')[1]),
+                'fps': config['video']['v4l2_fps'],
+                'fourcc': 'MJPG'
+            },
+            'audio': {
+                'enabled': config['capabilities']['audio'],
+                'device': config['audio']['device'],
+                'channels': config['audio']['channels'],
+                'rate': config['audio']['sample_rate']
+            },
+            'storage': {
+                'path': config['paths']['record_root'],
+                'segment_seconds': config['storage']['segment_seconds'],
+                'container': config['storage']['container'],
+                'filename_pattern': config['storage']['filename_pattern']
+            },
+            'gpio': {
+                'record_led': config['gpio']['record_led']
+            },
+            'capabilities': {
+                'gnss': config['capabilities']['gnss'],
+                'rtc': True  # Default to True since it's a core feature
+            }
+        }
+    except:
+        pass
+    try:
+        recorder = VideoRecorder(recorder_config)
         print("Press Enter to start recording...")
         input()
         
@@ -615,4 +631,9 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nStopping...")
         if 'recorder' in locals():
+            recorder.cleanup()
+    except Exception as e:
+        print(f"Error: {e}")
+        if 'recorder' in locals():
+            recorder.cleanup()
             recorder.cleanup()
