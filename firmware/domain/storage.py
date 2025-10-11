@@ -12,7 +12,7 @@ import os
 
 class VideoRecorder:
     """Video recording optimized for Raspberry Pi"""
-    def __init__(self, filename="temp_video.avi", width=640, height=480, fps=15, device_index=0):
+    def __init__(self, filename="temp_video.avi", width=640, height=480, fps=15, device_index=1):
         self.open = True
         self.device_index = device_index
         self.filename = filename
