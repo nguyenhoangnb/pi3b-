@@ -561,7 +561,7 @@ class VideoRecorder:
                 ffmpeg
                 .input(self.config['camera']['device'], 
                        f='v4l2', 
-                       input_format='yuyv422',  # Camera native format
+                       input_format='mjpeg',  # Camera native format
                        framerate=fps,
                        video_size=f'{width}x{height}')
                 .output('pipe:', format='rawvideo', pix_fmt='bgr24')  # Convert to BGR24
@@ -626,7 +626,7 @@ class VideoRecorder:
                             print("✓ Camera restarted")
                             
                             if self.hls_enabled:
-                                time.sleep(0.5)
+                                # time.sleep(0.5)
                                 self._start_hls_stream()
                             
                             self.segment_start_time = 0
