@@ -174,7 +174,7 @@ class VideoRecorder:
             usb_config = self.config['usb']
             self.usb_manager = USBManager(path=usb_config['path'], min_free_gb=usb_config['min_free_gb'], min_free_percent=usb_config['min_free_percent'])
             print("✓ USB Manager initialized")
-
+            self.segment_duration = self.config['storage']['segment_seconds']
             self.record_led = gpioLed(self.config['leds']['record_led_pin'])
             print("✓ Record LED initialized")
 
@@ -266,7 +266,10 @@ class VideoRecorder:
             cv2.putText(frame, gps_text, (10, height - 30), cv2.FONT_HERSHEY_SIMPLEX, cfg['font_scale'], cfg['text_color'], cfg['font_thickness'], cv2.LINE_AA)
 
         return frame
-
+    def _should_create_new_segment(self):
+        if not self.segment_start_time:
+            return True
+        return (time.time() - self.segment_start_time) >= self.segment_duration
     # ---------------- HLS STREAM ----------------
     def _setup_hls_streaming(self):
         self.hls_dir.mkdir(parents=True, exist_ok=True)
@@ -276,15 +279,92 @@ class VideoRecorder:
     # ---------------- RECORDING LOOP ----------------
     def _recording_loop(self):
         print("🎥 Recording thread started")
-        segment_duration = self.config['recording']['segment_duration']
         while not self._stop_recording:
-            try:
-                frame = self.camera.read_frame()
-                frame_with_overlay = self._add_overlays(frame)
-                # TODO: send to FFmpeg process
-            except Exception as e:
-                print(f"⚠ Recording loop error: {e}")
+            if self._should_create_new_segment():
+                self._create_new_segment()
+
+            frame = self.camera.read_frame()
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            frame_with_overlay = self._add_overlays(frame)
+            self._write_frame_to_ffmpeg(frame_with_overlay)
+
             time.sleep(0.04)  # ~25fps
+
+        # Cleanup FFmpeg when stopping
+        if self.current_recorder_process:
+            try:
+                self.current_recorder_process.stdin.close()
+                self.current_recorder_process.wait(timeout=2)
+            except:
+                self.current_recorder_process.kill()
+            self.current_recorder_process = None
+
+    def _create_new_segment(self):
+        # Đảm bảo USB sẵn sàng
+        if not self.usb_manager.is_available():
+            self.usb_manager.wait_until_available()
+
+        # Kiểm tra dung lượng còn đủ, nếu không đủ xóa file cũ
+        while not self.usb_manager.has_enough_space():
+            print("⚠ Không đủ dung lượng, chờ hoặc xóa file cũ...")
+            time.sleep(1)
+
+        # Close previous FFmpeg process
+        if self.current_recorder_process:
+            try:
+                self.current_recorder_process.stdin.close()
+                self.current_recorder_process.wait(timeout=2)
+            except:
+                self.current_recorder_process.kill()
+            self.current_recorder_process = None
+
+        # Tạo file mới
+        now = datetime.now().strftime("%Y%m%d-%H%M%S")
+        base_dir = Path(self.config['usb']['path'])
+        base_dir.mkdir(parents=True, exist_ok=True)
+        output_file = base_dir / f"{now}.mp4"
+
+        # FFmpeg command
+        width, height, fps = self.config['camera']['width'], self.config['camera']['height'], self.config['camera']['fps']
+        cmd = [
+            "ffmpeg",
+            "-y",  # overwrite
+            "-f", "rawvideo",
+            "-pix_fmt", "bgr24",
+            "-s", f"{width}x{height}",
+            "-r", str(fps),
+            "-i", "pipe:0"
+        ]
+
+        # Audio
+        if self.micro and self.enable_audio:
+            audio_device = self.config['audio'].get('device') or "plughw:1,0"
+            audio_rate = self.config['audio'].get('sample_rate', 48000)
+            audio_ch = self.config['audio'].get('channels', 1)
+            cmd.extend([
+                "-f", "alsa",
+                "-ac", str(audio_ch),
+                "-ar", str(audio_rate),
+                "-i", audio_device,
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-map", "0:v:0",
+                "-map", "1:a:0"
+            ])
+        else:
+            cmd.append("-an")
+
+        cmd.extend(["-c:v", "h264_v4l2m2m", "-b:v", "2M", "-pix_fmt", "yuv420p", str(output_file)])
+
+        # Start FFmpeg
+        self.current_recorder_process = subprocess.Popen(
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=10**7
+        )
+        self.segment_start_time = time.time()
+        print(f"🎬 New segment started: {output_file}")
 
     # ---------------- RECORDING CONTROL ----------------
     def start_recording(self):
