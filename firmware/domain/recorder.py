@@ -569,14 +569,20 @@ class VideoRecorder:
                 width, height = 640, 480
                 self.target_fps = 30
 
+            # Fix exact argument order for v4l2
             camera_stream = (
                 ffmpeg
-                .input(self.config['camera']['device'], 
-                       format='v4l2',
-                       input_format='yuyv422',  # Camera native format
-                       video_size=f'{width}x{height}',
-                       framerate=self.target_fps)
-                .output('pipe:', format='rawvideo', pix_fmt='bgr24')  # Convert to BGR24
+                .input(self.config['camera']['device'])
+                .output('pipe:',
+                    format='rawvideo',
+                    pix_fmt='bgr24',
+                    **{
+                        'f': 'v4l2',
+                        'input_format': 'yuyv422',
+                        'video_size': f'{width}x{height}',
+                        'framerate': str(self.target_fps)
+                    }
+                )
                 .global_args('-hide_banner', '-loglevel', 'error')
             )
             
