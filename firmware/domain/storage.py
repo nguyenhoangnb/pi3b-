@@ -12,7 +12,7 @@ import os
 
 class VideoRecorder:
     """Video recording optimized for Raspberry Pi"""
-    def __init__(self, filename="temp_video.avi", width=640, height=480, fps=15, device_index=1):
+    def __init__(self, filename="temp_video.avi", width=640, height=480, fps=15, device_index=0):
         self.open = True
         self.device_index = device_index
         self.filename = filename
@@ -55,28 +55,74 @@ class VideoRecorder:
 
 
 class AudioRecorder:
-    """Audio recording"""
-    def __init__(self, filename="temp_audio.wav", rate=16000, channels=1, device_index=None):
+    """Audio recording compatible with Raspberry Pi and config (hw:1,0)"""
+    def __init__(self, filename="temp_audio.wav", rate=48000, channels=1, device_name=None):
+        import re
         self.open = True
         self.filename = filename
         self.rate = rate
         self.channels = channels
         self.frames = []
         self.audio = pyaudio.PyAudio()
+        self.device_index = None
 
-        self.stream = self.audio.open(format=pyaudio.paInt16,
-                                      channels=self.channels,
-                                      rate=self.rate,
-                                      input=True,
-                                      input_device_index=device_index,
-                                      frames_per_buffer=1024)
+        # Nếu device_name kiểu "hw:1,0" → parse ra card index
+        if device_name and re.match(r"hw:(\d+),(\d+)", device_name):
+            card, dev = map(int, re.findall(r"\d+", device_name))
+            print(f"🎧 Looking for ALSA device hw:{card},{dev}")
+            for i in range(self.audio.get_device_count()):
+                info = self.audio.get_device_info_by_index(i)
+                name = info.get("name", "")
+                if str(card) in name or "USB" in name:
+                    self.device_index = i
+                    print(f"✅ Found matching device: {name} (index={i})")
+                    break
+
+        # Nếu không tìm thấy thì fallback
+        if self.device_index is None:
+            print("⚠️ Không tìm thấy thiết bị phù hợp, fallback về mặc định")
+            for i in range(self.audio.get_device_count()):
+                info = self.audio.get_device_info_by_index(i)
+                if info.get('maxInputChannels', 0) > 0:
+                    self.device_index = i
+                    print(f"🎤 Default device: {info['name']} (index={i})")
+                    break
+
+        if self.device_index is None:
+            print("❌ Không có thiết bị ghi âm nào!")
+            self.open = False
+            return
+
+        # Mở stream
+        try:
+            self.stream = self.audio.open(
+                format=pyaudio.paInt16,
+                channels=self.channels,
+                rate=self.rate,
+                input=True,
+                input_device_index=self.device_index,
+                frames_per_buffer=1024
+            )
+            print(f"🎙️ Recording from device index {self.device_index} at {self.rate}Hz")
+        except Exception as e:
+            print(f"❌ Không thể mở audio stream: {e}")
+            self.open = False
+            return
 
     def record(self):
+        if not self.open:
+            return
         while self.open:
-            data = self.stream.read(1024, exception_on_overflow=False)
-            self.frames.append(data)
+            try:
+                data = self.stream.read(1024, exception_on_overflow=False)
+                self.frames.append(data)
+            except Exception as e:
+                print("⚠️ Audio read error:", e)
+                break
 
     def stop(self):
+        if not self.open:
+            return
         self.open = False
         self.stream.stop_stream()
         self.stream.close()
@@ -88,9 +134,6 @@ class AudioRecorder:
         wf.setframerate(self.rate)
         wf.writeframes(b''.join(self.frames))
         wf.close()
-
-    def start(self):
-        threading.Thread(target=self.record, daemon=True).start()
 
 
 def merge_av(video_file, audio_file, output_file="output.mp4"):
