@@ -319,9 +319,13 @@ class VideoRecorder:
     def _should_create_new_segment(self):
         """Check if it's time to create a new segment"""
         if not hasattr(self, 'segment_start_time'):
+            print("First segment creation")
             return True
         segment_duration = time.time() - self.segment_start_time
-        return segment_duration >= self.config['storage']['segment_seconds']
+        should_create = segment_duration >= self.config['storage']['segment_seconds']
+        if should_create:
+            print(f"Segment duration {segment_duration:.1f}s exceeded limit of {self.config['storage']['segment_seconds']}s")
+        return should_create
 
     def _convert_to_mp4(self, video_file, audio_file=None):
         """Convert video to MP4, optionally merging with audio"""
@@ -389,16 +393,21 @@ class VideoRecorder:
 
     def _create_new_segment(self):
         """Create new video and audio segment"""
-        # Check storage space and handle USB events
-        if hasattr(self, 'usb_manager'):
-            # Wait until USB is available
-            while self.is_recording and not self.usb_manager.is_available():
-                print("⚠ USB disconnected during recording")
-                self.usb_manager.wait_until_available()
-                if not self.is_recording:
-                    return False
-            
-            # Try to free up space if needed
+            # Check storage space and handle USB events
+            if hasattr(self, 'usb_manager'):
+                # Wait until USB is available
+                while self.is_recording and not self.usb_manager.is_available():
+                    print("⚠ USB disconnected during recording")
+                    self.usb_manager.wait_until_available()
+                    if not self.is_recording:
+                        return False
+                
+                # Log storage status
+                try:
+                    free_space = self.usb_manager.get_free_space()
+                    total_space = self.usb_manager.get_total_space()
+                    free_percent = (free_space / total_space) * 100
+                    print(f"Storage status: {free_space:.1f}GB free of {total_space:.1f}GB ({free_percent:.1f}%)")            # Try to free up space if needed
             while self.is_recording and not self.usb_manager.has_enough_space():
                 print("⚠ Storage space low, cleaning up...")
                 self.usb_manager.cleanup_old_files()
@@ -454,15 +463,25 @@ class VideoRecorder:
     def _record_loop(self):
         """Main video recording loop"""
         self.segment_start_time = time.time()
+        last_frame_time = time.time()
+        frames_in_segment = 0
         
         while self.is_recording:
-            # Check USB status periodically
-            if hasattr(self, 'usb_manager'):
-                if not self.usb_manager.is_available():
-                    print("⚠ USB disconnected during recording")
-                    self.usb_manager.wait_until_available()
-                    if not self.is_recording:
-                        break
+            try:
+                # Check USB status periodically
+                if hasattr(self, 'usb_manager'):
+                    if not self.usb_manager.is_available():
+                        print("⚠ USB disconnected during recording")
+                        self.usb_manager.wait_until_available()
+                        if not self.is_recording:
+                            break
+                
+                # Log frame timing
+                current_time = time.time()
+                frame_interval = current_time - last_frame_time
+                if frame_interval > 1.0/self.fps * 2:  # If frame took twice as long as expected
+                    print(f"⚠ Slow frame: {frame_interval:.3f}s (target: {1.0/self.fps:.3f}s)")
+                last_frame_time = current_time
             
             # Check if need to create new segment
             if self._should_create_new_segment():
@@ -473,18 +492,36 @@ class VideoRecorder:
             ret, frame = self.camera.read()
             if ret:
                 # Add overlays
-                frame_with_overlay = self._add_overlays(frame)
-                
-                # Write to file
-                self.video_writer.write(frame_with_overlay)
-                
-                # Write to HLS stream (without overlay)
-                if self.config['hls']['enabled'] and FFMPEG_AVAILABLE:
-                    if not self._write_frame_to_hls(frame):
-                        # Try to restart HLS if failed
-                        self._setup_hls()
-                
-                self.frame_count += 1
+                try:
+                    frame_with_overlay = self._add_overlays(frame)
+                    
+                    # Write to file
+                    if not self.video_writer.isOpened():
+                        print("⚠ Video writer is not opened!")
+                        break
+                        
+                    self.video_writer.write(frame_with_overlay)
+                    
+                    # Write to HLS stream (without overlay)
+                    if self.config['hls']['enabled'] and FFMPEG_AVAILABLE:
+                        if not self._write_frame_to_hls(frame):
+                            print("⚠ HLS write failed")
+                            # Try to restart HLS if failed
+                            self._setup_hls()
+                    
+                    self.frame_count += 1
+                    
+                    # Log progress every 30 frames
+                    if self.frame_count % 30 == 0:
+                        elapsed = time.time() - self.start_time
+                        current_fps = self.frame_count / elapsed
+                        print(f"Recording: {self.frame_count} frames, {elapsed:.1f}s ({current_fps:.1f} fps)")
+                        
+                except Exception as e:
+                    print(f"⚠ Error writing frame: {e}")
+                    break
+            else:
+                print("⚠ Failed to read frame from camera")
                 
                 # Maintain target FPS
                 time.sleep(max(0, 1.0/self.fps - 0.01))
