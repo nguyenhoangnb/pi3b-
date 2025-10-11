@@ -534,16 +534,17 @@ class VideoRecorder:
             audio_rate = self.config['audio'].get('sample_rate', 48000)
             audio_ch = self.config['audio'].get('channels', 1)
             cmd.extend([
-                "-thread_queue_size", "512",  # Prevent blocking on audio input
-                "-use_wallclock_as_timestamps", "1",  # Use system time instead of waiting for audio sync
                 "-f", "alsa",
+                "-thread_queue_size", "1024",  # Large buffer to prevent blocking
                 "-ac", str(audio_ch),
                 "-ar", str(audio_rate),
-                "-i", audio_device,
+                "-i", audio_device,  # Audio input
                 "-c:a", "aac",
                 "-b:a", "128k",
                 "-map", "0:v:0",  # Map video from pipe
-                "-map", "1:a:0"   # Map audio from ALSA
+                "-map", "1:a:0",   # Map audio from ALSA
+                "-async", "1",  # Audio sync method - resample audio to match video
+                "-vsync", "2"  # Video sync method - passthrough timestamps
             ])
             print(f"✓ Audio enabled: {audio_device}")
         else:

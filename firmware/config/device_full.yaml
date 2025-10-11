@@ -6,7 +6,7 @@ device:
   fw_version: "0.2.0"
 capabilities:
   video: True
-  audio: True
+  audio: False  # Disabled to prevent FFmpeg blocking
   lte: True
   gnss: True
   storage: True
