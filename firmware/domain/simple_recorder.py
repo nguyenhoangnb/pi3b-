@@ -94,20 +94,36 @@ class VideoRecorder:
         # Initialize hardware components
         self._init_hardware_components()
         
-        # Initialize camera
+        # Initialize camera with optimized settings
         self.camera = cv2.VideoCapture(self.config['camera']['device'])
+        
+        # Set optimized camera properties
+        self.camera.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffering delay
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.config['camera']['width'])
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config['camera']['height'])
         self.camera.set(cv2.CAP_PROP_FPS, self.config['camera']['fps'])
         
+        # Try to set additional optimization flags if available
+        try:
+            self.camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+            self.camera.set(cv2.CAP_PROP_CONVERT_RGB, 0)  # Avoid color space conversion if possible
+        except:
+            pass
+            
         # Check if camera opened successfully
         if not self.camera.isOpened():
             raise Exception("Error: Could not open camera")
-        
-        # Get actual camera parameters
+            
+        # Verify we got the requested parameters
         self.width = int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.fps = int(self.camera.get(cv2.CAP_PROP_FPS))
+        
+        # Warm up the camera
+        print("Warming up camera...")
+        for _ in range(10):
+            self.camera.read()
+            time.sleep(0.1)
         
         print(f"Camera initialized: {self.width}x{self.height} @ {self.fps}fps")
         
@@ -481,17 +497,22 @@ class VideoRecorder:
         """Main video recording loop"""
         self.segment_start_time = time.time()
         last_frame_time = time.time()
+        last_usb_check = time.time()
         frames_in_segment = 0
+        frame_count_at_start = self.frame_count
+        errors_count = 0
         
         while self.is_recording:
             try:
-                # Check USB status periodically
-                if hasattr(self, 'usb_manager'):
-                    if not self.usb_manager.is_available():
+                # Only check USB status every second
+                current_time = time.time()
+                if current_time - last_usb_check > 1.0:
+                    if hasattr(self, 'usb_manager') and not self.usb_manager.is_available():
                         print("⚠ USB disconnected during recording")
                         self.usb_manager.wait_until_available()
                         if not self.is_recording:
                             break
+                    last_usb_check = current_time
                 
                 # Log frame timing
                 current_time = time.time()
@@ -512,28 +533,27 @@ class VideoRecorder:
             # Calculate target time for this frame
             target_time = last_frame_time + 1.0/self.fps
             
-            # Try to read frame with timeout
+            # Read frame with timing
             start_read = time.time()
             ret, frame = self.camera.read()
             read_time = time.time() - start_read
             
             if ret:
+                errors_count = 0  # Reset error counter on successful read
                 try:
-                    frame_processed = False
-                    while not frame_processed and self.is_recording:
-                        try:
-                            # Only add overlays if needed and not too far behind
-                            if self.config['overlay']['timestamp'] or self.config['overlay']['gps']:
-                                frame_with_overlay = self._add_overlays(frame)
-                            else:
-                                frame_with_overlay = frame
-                            
-                            # Write to file if writer is ready
-                            if self.video_writer.isOpened():
-                                self.video_writer.write(frame_with_overlay)
-                            else:
-                                print("⚠ Video writer is not opened!")
-                                break
+                    # Direct write for maximum performance
+                    if self.video_writer.isOpened():
+                        self.video_writer.write(frame)
+                    else:
+                        print("⚠ Video writer is not opened!")
+                        break
+                        
+                    # Only add overlays to HLS stream if we're keeping up
+                    if read_time < 0.05:  # Only do extra processing if we're fast enough
+                        if self.config['overlay']['timestamp'] or self.config['overlay']['gps']:
+                            frame_with_overlay = self._add_overlays(frame.copy())
+                        else:
+                            frame_with_overlay = frame
                             
                             # Write to HLS stream in background if enabled and not too far behind
                             if (self.config['hls']['enabled'] and FFMPEG_AVAILABLE and 
@@ -551,13 +571,7 @@ class VideoRecorder:
                                 elapsed = time.time() - self.start_time
                                 current_fps = self.frame_count / elapsed
                                 print(f"Recording: {self.frame_count} frames, {elapsed:.1f}s ({current_fps:.1f} fps)")
-                            
-                        except IOError as e:
-                            if "No space left on device" in str(e):
-                                print("⚠ Storage full, waiting for cleanup...")
-                                time.sleep(0.1)  # Wait briefly for background cleanup
-                                continue
-                            raise
+                 
                             
                     # Only sleep if we processed the frame quickly
                     current_time = time.time()
@@ -568,8 +582,24 @@ class VideoRecorder:
                     print(f"⚠ Error writing frame: {e}")
                     break
             else:
-                print("⚠ Failed to read frame from camera")
-                break  # Stop recording if we can't read frames
+                errors_count += 1
+                print(f"⚠ Failed to read frame from camera ({errors_count})")
+                
+                if errors_count >= 5:
+                    print("❌ Too many camera read failures, stopping recording")
+                    break
+                    
+                # Try to recover by reinitializing camera
+                if errors_count == 3:
+                    print("⚠ Attempting to reinitialize camera...")
+                    self.camera.release()
+                    time.sleep(1)
+                    self.camera = cv2.VideoCapture(self.config['camera']['device'])
+                    if not self.camera.isOpened():
+                        print("❌ Failed to reinitialize camera")
+                        break
+                        
+                time.sleep(0.1)  # Brief pause before retry
     
     def _record_audio(self):
         """Audio recording loop"""
