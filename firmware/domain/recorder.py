@@ -275,6 +275,14 @@ class VideoRecorder:
         self.hls_dir.mkdir(parents=True, exist_ok=True)
         if self.hls_enabled:
             print(f"🎬 HLS streaming directory: {self.hls_dir}")
+    
+    def _write_frame_to_ffmpeg(self, frame):
+        if self.current_recorder_process:
+            try:
+                self.current_recorder_process.stdin.write(frame.tobytes())
+            except BrokenPipeError:
+                print("⚠ FFmpeg pipe broken, will start new segment")
+                self.segment_start_time = 0
 
     # ---------------- RECORDING LOOP ----------------
     def _recording_loop(self):
