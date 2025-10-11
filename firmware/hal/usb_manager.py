@@ -4,7 +4,7 @@ import shutil
 from glob import glob
 
 class USBManager:
-    def __init__(self, path="/media/hoang/USB", min_free_percent=10, min_free_gb=1.0, camera_id=1):
+    def __init__(self, path="/media/ssd", min_free_percent=10, min_free_gb=1.0, camera_id=1):
         self.path = path
         self.min_free_percent = min_free_percent
         self.min_free_gb = min_free_gb
