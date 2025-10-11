@@ -4,11 +4,11 @@ import wave
 
 
 class Micro:
-    def __init__(self, alsa_device=None, sample_rate=48000):
+    def __init__(self, device=None, sample_rate=48000):
         """
-        alsa_device: tên hoặc index thiết bị (vd: 'USB Audio Device' hoặc 2)
+        device: tên hoặc index thiết bị (vd: 'USB Audio Device' hoặc 2)
         """
-        self.device = alsa_device
+        self.device = device
         self.sample_rate = sample_rate
         self.channels = 1
         self.recording = None

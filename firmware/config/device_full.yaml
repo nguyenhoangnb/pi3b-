@@ -30,7 +30,7 @@ video:
   v4l2_format: "640x480"
   v4l2_fps: 30
 audio:
-  alsa_device: null
+  device: null
   sample_rate: 48000
 overlay:
   timestamp_font: "/usr/share/fonts/Truetype/dejavu/DejaVuSansMono.ttf"
