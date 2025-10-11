@@ -468,12 +468,15 @@ class VideoRecorder:
                 if frame_interval > 1.0/self.fps * 2:  # If frame took twice as long as expected
                     print(f"⚠ Slow frame: {frame_interval:.3f}s (target: {1.0/self.fps:.3f}s)")
                 last_frame_time = current_time
-            
-            # Check if need to create new segment
-            if self._should_create_new_segment():
-                if not self._create_new_segment():
-                    print("✗ Failed to create new segment")
-                    break
+                
+                # Check if need to create new segment
+                if self._should_create_new_segment():
+                    if not self._create_new_segment():
+                        print("✗ Failed to create new segment")
+                        break
+            except Exception as e:
+                print(f"⚠ Error in main record loop: {e}")
+                break
 
             ret, frame = self.camera.read()
             if ret:
