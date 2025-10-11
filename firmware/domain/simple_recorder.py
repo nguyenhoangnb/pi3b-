@@ -478,25 +478,32 @@ class VideoRecorder:
                 print(f"⚠ Error in main record loop: {e}")
                 break
 
+            # Calculate target time for this frame
+            target_time = last_frame_time + 1.0/self.fps
+            
             ret, frame = self.camera.read()
             if ret:
-                # Add overlays
                 try:
-                    frame_with_overlay = self._add_overlays(frame)
+                    # Only add overlays if needed
+                    if self.config['overlay']['timestamp'] or self.config['overlay']['gps']:
+                        frame_with_overlay = self._add_overlays(frame)
+                    else:
+                        frame_with_overlay = frame
                     
-                    # Write to file
-                    if not self.video_writer.isOpened():
+                    # Write to file if writer is ready
+                    if self.video_writer.isOpened():
+                        self.video_writer.write(frame_with_overlay)
+                    else:
                         print("⚠ Video writer is not opened!")
                         break
-                        
-                    self.video_writer.write(frame_with_overlay)
                     
-                    # Write to HLS stream (without overlay)
-                    if self.config['hls']['enabled'] and FFMPEG_AVAILABLE:
-                        if not self._write_frame_to_hls(frame):
-                            print("⚠ HLS write failed")
-                            # Try to restart HLS if failed
-                            self._setup_hls()
+                    # Write to HLS stream in background if enabled
+                    if self.config['hls']['enabled'] and FFMPEG_AVAILABLE and hasattr(self, 'hls_process'):
+                        try:
+                            self.hls_process.stdin.write(frame.tobytes())
+                        except (BrokenPipeError, OSError):
+                            # Don't try to restart HLS immediately, wait for next segment
+                            pass
                     
                     self.frame_count += 1
                     
@@ -505,15 +512,18 @@ class VideoRecorder:
                         elapsed = time.time() - self.start_time
                         current_fps = self.frame_count / elapsed
                         print(f"Recording: {self.frame_count} frames, {elapsed:.1f}s ({current_fps:.1f} fps)")
-                        
+                    
+                    # Sleep only if we're ahead of schedule
+                    current_time = time.time()
+                    if current_time < target_time:
+                        time.sleep(target_time - current_time)
+                    
                 except Exception as e:
                     print(f"⚠ Error writing frame: {e}")
                     break
             else:
                 print("⚠ Failed to read frame from camera")
-                
-                # Maintain target FPS
-                time.sleep(max(0, 1.0/self.fps - 0.01))
+                break  # Stop recording if we can't read frames
     
     def _record_audio(self):
         """Audio recording loop"""
@@ -600,39 +610,40 @@ class VideoRecorder:
 
     def _add_overlays(self, frame):
         """Add overlays (timestamp, GPS, etc) to frame"""
-        # Make a copy to avoid modifying original
-        frame = frame.copy()
-        height = frame.shape[0]
         cfg = self.config['overlay']
         
-        y_pos = height - 10  # Start from bottom
+        # Skip if no overlays needed
+        if not (cfg.get('timestamp', True) or cfg.get('gps', False)):
+            return frame
+            
+        # Make a copy only if we need to add overlays
+        frame = frame.copy()
+        height = frame.shape[0]
+        y_pos = height - 10
         
-        # Timestamp from RTC or system
+        # Pre-configure common text parameters
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = cfg.get('font_scale', 0.7)
+        color = cfg.get('text_color', (255, 255, 255))
+        thickness = cfg.get('thickness', 2)
+        
+        # Timestamp from RTC or system (most common case first)
         if cfg.get('timestamp', True):
-            time_text = self._get_time_text()
             cv2.putText(
-                frame, time_text,
-                (10, y_pos),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                cfg.get('font_scale', 0.7),
-                cfg.get('text_color', (255, 255, 255)),
-                cfg.get('thickness', 2),
-                cv2.LINE_AA
+                frame, self._get_time_text(),
+                (10, y_pos), font, font_scale,
+                color, thickness, cv2.LINE_AA
             )
             y_pos -= 30
         
-        # GPS coordinates if available
-        if cfg.get('gps', False):
+        # GPS coordinates if enabled
+        if cfg.get('gps', False) and hasattr(self, 'gnss') and self.gnss:
             gps_text = self._get_gps_text()
             if gps_text:
                 cv2.putText(
                     frame, gps_text,
-                    (10, y_pos),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    cfg.get('font_scale', 0.7),
-                    cfg.get('text_color', (255, 255, 255)),
-                    cfg.get('thickness', 2),
-                    cv2.LINE_AA
+                    (10, y_pos), font, font_scale,
+                    color, thickness, cv2.LINE_AA
                 )
         
         return frame
