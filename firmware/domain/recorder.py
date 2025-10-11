@@ -600,15 +600,24 @@ class VideoRecorder:
             ]
             
             # Add audio input if available
+            audio_enabled = False
             if self.enable_audio and self.micro and self.micro.check_device_available():
-                audio_device = self.config.get('audio', {}).get('device', 'hw:1,0')
-                ffmpeg_cmd.extend([
-                    '-f', 'alsa',
-                    '-i', audio_device,
-                    '-ac', '1',  # Mono
-                    '-ar', '16000',  # 16kHz sample rate
-                ])
-                print(f"✓ Audio enabled: {audio_device}")
+                # Get audio device, fallback to 'default' if None or empty
+                audio_device = self.config.get('audio', {}).get('device')
+                if not audio_device:  # None or empty string
+                    audio_device = 'default'  # Use ALSA default device
+                
+                try:
+                    ffmpeg_cmd.extend([
+                        '-f', 'alsa',
+                        '-i', audio_device,
+                        '-ac', '1',  # Mono
+                        '-ar', '16000',  # 16kHz sample rate
+                    ])
+                    audio_enabled = True
+                    print(f"✓ Audio enabled: {audio_device}")
+                except Exception as e:
+                    print(f"⚠ Failed to add audio: {e}")
             else:
                 print("⚠ Audio disabled or not available")
             
@@ -625,7 +634,7 @@ class VideoRecorder:
             ])
             
             # Audio encoding if audio is present
-            if self.enable_audio and self.micro and self.micro.check_device_available():
+            if audio_enabled:
                 ffmpeg_cmd.extend([
                     '-c:a', 'aac',
                     '-b:a', '64k',
@@ -644,13 +653,14 @@ class VideoRecorder:
                 ffmpeg_cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
+                stderr=subprocess.PIPE  # Changed to PIPE to capture errors
             )
             
             # Check if process started
             time.sleep(0.3)
             if self.current_recorder_process.poll() is not None:
-                print("✗ FFmpeg process died immediately")
+                stderr = self.current_recorder_process.stderr.read().decode('utf-8', errors='ignore')
+                print(f"✗ FFmpeg process died immediately: {stderr}")
                 return False
 
             print("✅ FFmpeg recording started")
@@ -658,6 +668,8 @@ class VideoRecorder:
 
         except Exception as e:
             print(f"⚠ FFmpeg recorder error: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _should_create_new_segment(self):
