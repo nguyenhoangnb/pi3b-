@@ -21,7 +21,7 @@ paths:
   log_dir: /media/ssd
 storage:
   min_free_gb: 1.0
-  segment_seconds: 600
+  segment_seconds: 30
   container: mkv
   filename_pattern: "%Y%m%d-%H%M%S.mkv"
 video:

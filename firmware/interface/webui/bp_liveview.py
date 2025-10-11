@@ -15,31 +15,37 @@ def _mjpeg_from_hls():
     try:
         process = (
             ffmpeg
-            .input(str(HLS_DIR / "live.m3u8"), re=None)
-            .filter('drawtext',
-                text='%{localtime\:%Y-%m-%d %H\:%M\:%S}',
-                fontcolor='white',
-                fontsize=24,
-                box=1,
-                boxcolor='black@0.5',
-                boxborderw=5,
-                x=10,
-                y='h-th-10'
+            .input(str(HLS_DIR / "live.m3u8"), 
+                re=None,
+                fflags='nobuffer',  # Disable input buffering
+                flags='low_delay'   # Enable low delay flags
             )
-            .output('pipe:', format='mpjpeg', **{
-                'q:v': 7,
-                'pix_fmt': 'yuvj422p',
-                'boundary_tag': 'frame'
-            })
+            .output('pipe:', 
+                format='mpjpeg',
+                **{
+                    'q:v': 5,               # Slightly better quality
+                    'pix_fmt': 'yuvj422p',
+                    'boundary_tag': 'frame',
+                    'vsync': '0',           # Disable frame dropping
+                    'max_delay': '500000',  # 0.5s max delay
+                    'thread_queue_size': '512'  # Larger queue for better throughput
+                })
             .global_args('-hide_banner', '-loglevel', 'error')
             .run_async(pipe_stdout=True, pipe_stderr=True)
         )
         
+        import select
+        
         while True:
-            chunk = process.stdout.read(4096)
-            if not chunk:
-                break
-            yield chunk
+            # Wait for data with timeout
+            if select.select([process.stdout], [], [], 0.5)[0]:  # 0.5s timeout
+                chunk = process.stdout.read(8192)  # Larger buffer size
+                if not chunk:
+                    break
+                yield chunk
+            else:
+                # No data available, yield empty chunk to keep connection alive
+                yield b''\n'
     finally:
         try:
             process.kill()
@@ -67,31 +73,25 @@ def _ensure_recorder_running():
     return False
 
 
-def _wait_for_hls_ready(timeout: float = 5.0) -> bool:
+def _wait_for_hls_ready(timeout: float = 1.0) -> bool:
     """
-    Wait for HLS stream to be ready.
-    Returns True if HLS files exist, False if timeout.
+    Quick check if HLS stream is ready.
+    Returns True if m3u8 file exists and has content.
     """
     m3u8_file = HLS_DIR / "live.m3u8"
     start_time = time.time()
     
+    # Only check m3u8 file with shorter timeout
     while time.time() - start_time < timeout:
-        # Check if m3u8 file exists and has content
         if m3u8_file.exists():
             try:
-                # Check if file has some content (not empty)
                 if m3u8_file.stat().st_size > 0:
-                    # Also check if at least one .ts segment exists
-                    ts_files = list(HLS_DIR.glob("*.ts"))
-                    if ts_files:
-                        print(f"✓ HLS ready: {m3u8_file}")
-                        return True
+                    return True
             except:
                 pass
-        
-        time.sleep(0.2)  # Check every 200ms
+        time.sleep(0.1)  # Shorter sleep interval
     
-    print(f"⚠ HLS not ready after {timeout}s")
+    print(f"⚠ HLS playlist not ready")
     return False
 
 
