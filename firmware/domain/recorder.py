@@ -182,7 +182,7 @@ class VideoRecorder:
                 try:
                     audio_config = self.config['audio']
                     self.micro = Micro(
-                        alsa_device=audio_config.get('device', None),
+                        device=audio_config.get('device', None),
                         sample_rate=audio_config.get('sample_rate', 48000)
                     )
                     self.enable_audio = self.micro.check_device_available()
@@ -279,7 +279,7 @@ class VideoRecorder:
         segment_duration = self.config['recording']['segment_duration']
         while not self._stop_recording:
             try:
-                frame = self.camera.read()
+                frame = self.camera.read_frame()
                 frame_with_overlay = self._add_overlays(frame)
                 # TODO: send to FFmpeg process
             except Exception as e:
