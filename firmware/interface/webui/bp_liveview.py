@@ -16,6 +16,16 @@ def _mjpeg_from_hls():
         process = (
             ffmpeg
             .input(str(HLS_DIR / "live.m3u8"), re=None)
+            .filter('drawtext',
+                text='%{localtime\:%Y-%m-%d %H\:%M\:%S}',
+                fontcolor='white',
+                fontsize=24,
+                box=1,
+                boxcolor='black@0.5',
+                boxborderw=5,
+                x=10,
+                y='h-th-10'
+            )
             .output('pipe:', format='mpjpeg', **{
                 'q:v': 7,
                 'pix_fmt': 'yuvj422p',

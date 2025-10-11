@@ -374,19 +374,20 @@ class VideoRecorder:
             # Build FFmpeg command using ffmpeg-python
             stream = (
                 ffmpeg
-                .input('pipe:0', format='rawvideo', pix_fmt='bgr24', s=f'{width}x{height}', r=fps)
-                .filter('scale', 1280, 720)
+                .input('pipe:0', format='rawvideo', pix_fmt='bgr24', s=f'{width}x{height}', r=target_fps)
+                .filter('scale', width, height)  # No upscale, keep original size
                 .output(str(hls_playlist),
                     vcodec='libx264',
                     preset='ultrafast',
                     tune='zerolatency',
-                    **{'b:v': '500k'},
-                    g=int(fps * 2),
+                    **{'b:v': '800k'},  # Higher bitrate for better quality
+                    g=target_fps,  # GOP size = frame rate
+                    **{'r': target_fps},  # Force constant frame rate
                     pix_fmt='yuv420p',
                     f='hls',
                     hls_time=2,
                     hls_list_size=5,
-                    hls_flags='delete_segments',
+                    hls_flags='delete_segments+omit_endlist',  # Add omit_endlist for live streaming
                     hls_segment_filename=str(self.hls_dir / 'segment_%03d.ts')
                 )
                 .global_args('-hide_banner', '-loglevel', 'error')
@@ -554,16 +555,27 @@ class VideoRecorder:
         
         try:
             # Start camera capture using ffmpeg-python
-            width, height, fps = self.config['camera']['width'], self.config['camera']['height'], self.config['camera']['fps']
+            width = self.config['camera'].get('width', 640)
+            height = self.config['camera'].get('height', 480)
+            fps = self.config['camera'].get('fps', 30)  # This will be adjusted based on resolution
             
-            # Camera outputs YUYV, we need to convert to BGR24 for OpenCV processing
+            # Camera outputs YUYV 4:2:2 at specific resolutions/framerates
+            if width == 640 and height == 480:
+                target_fps = 30
+            elif width == 320 and height == 240:
+                target_fps = 15
+            else:
+                print(f"⚠ Unsupported resolution {width}x{height}, defaulting to 640x480@30fps")
+                width, height = 640, 480
+                target_fps = 30
+
             camera_stream = (
                 ffmpeg
                 .input(self.config['camera']['device'], 
                        format='v4l2',
                        input_format='yuyv422',  # Camera native format
                        video_size=f'{width}x{height}',
-                       framerate=fps)
+                       framerate=target_fps)
                 .output('pipe:', format='rawvideo', pix_fmt='bgr24')  # Convert to BGR24
                 .global_args('-hide_banner', '-loglevel', 'error')
             )
@@ -655,9 +667,9 @@ class VideoRecorder:
                         self.segment_start_time = 0
                         self.current_recorder_process = None
                 
-                # Write to HLS stream
+                # Write to HLS stream (use original frame without overlay)
                 if self.hls_enabled:
-                    self._write_frame_to_hls(frame_with_overlay)
+                    self._write_frame_to_hls(frame)  # Use original frame
                 
                 # Report progress every 5 seconds
                 if time.time() - last_report >= 5.0:
