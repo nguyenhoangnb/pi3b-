@@ -32,6 +32,11 @@ except (subprocess.SubprocessError, FileNotFoundError):
 class VideoRecorder:
     def __init__(self, config=None):
         """Initialize video recorder with simple OpenCV capture"""
+        # Initialize thread management
+        self.segment_thread = None
+        self.segment_ready = threading.Event()
+        self.segment_ready.set()  # Initially ready
+        
         # Default config
         default_config = {
             'camera': {
@@ -391,10 +396,26 @@ class VideoRecorder:
             print(f"✗ Failed to convert video: {e}")
             return False
 
+    def _finalize_segment(self, video_file, audio_file=None):
+        """Finalize a segment in a separate thread"""
+        try:
+            # Convert to MP4 in background
+            if self.audio_enabled and audio_file:
+                self._convert_to_mp4(video_file, audio_file)
+            else:
+                self._convert_to_mp4(video_file)
+        finally:
+            self.segment_ready.set()  # Mark that we're ready for next segment
+
     def _create_new_segment(self):
         """Create new video and audio segment"""
-            # Check storage space and handle USB events
-        while self.is_recording and not self.usb_manager.has_enough_space():
+        # Don't create new segment if previous one is still processing
+        if not self.segment_ready.is_set():
+            print("⚠ Still processing previous segment, skipping segmentation")
+            return True
+            
+        # Check storage space and handle USB events
+        if not self.usb_manager.has_enough_space():
             print("⚠ Storage space low, cleaning up...")
             self.usb_manager.cleanup_old_files()
             if not self.usb_manager.has_enough_space():
@@ -407,7 +428,7 @@ class VideoRecorder:
             self.video_writer.release()
             current_video = self.video_file
 
-        # Handle audio segment and merge with video
+        # Handle audio segment in background
         if (self.audio_enabled and hasattr(self, 'audio_frames') and 
             hasattr(self, 'video_file') and self.audio_frames):
             
@@ -420,14 +441,24 @@ class VideoRecorder:
                 wf.writeframes(b''.join(self.audio_frames))
             
             # Reset audio frames for new segment
+            audio_frames = self.audio_frames
             self.audio_frames = []
             
-            # Convert to MP4
-            if hasattr(self, 'video_file'):
-                if self.audio_enabled:
-                    self._convert_to_mp4(current_video, current_audio)
-                else:
-                    self._convert_to_mp4(current_video)
+            # Start background conversion
+            self.segment_ready.clear()
+            self.segment_thread = threading.Thread(
+                target=self._finalize_segment,
+                args=(current_video, current_audio)
+            )
+            self.segment_thread.start()
+        else:
+            # Start background conversion without audio
+            self.segment_ready.clear()
+            self.segment_thread = threading.Thread(
+                target=self._finalize_segment,
+                args=(current_video,)
+            )
+            self.segment_thread.start()
 
         # Generate new filename with timestamp (use .mkv for temp files)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S.mkv")
@@ -481,41 +512,56 @@ class VideoRecorder:
             # Calculate target time for this frame
             target_time = last_frame_time + 1.0/self.fps
             
+            # Try to read frame with timeout
+            start_read = time.time()
             ret, frame = self.camera.read()
+            read_time = time.time() - start_read
+            
             if ret:
                 try:
-                    # Only add overlays if needed
-                    if self.config['overlay']['timestamp'] or self.config['overlay']['gps']:
-                        frame_with_overlay = self._add_overlays(frame)
-                    else:
-                        frame_with_overlay = frame
-                    
-                    # Write to file if writer is ready
-                    if self.video_writer.isOpened():
-                        self.video_writer.write(frame_with_overlay)
-                    else:
-                        print("⚠ Video writer is not opened!")
-                        break
-                    
-                    # Write to HLS stream in background if enabled
-                    if self.config['hls']['enabled'] and FFMPEG_AVAILABLE and hasattr(self, 'hls_process'):
+                    frame_processed = False
+                    while not frame_processed and self.is_recording:
                         try:
-                            self.hls_process.stdin.write(frame.tobytes())
-                        except (BrokenPipeError, OSError):
-                            # Don't try to restart HLS immediately, wait for next segment
-                            pass
-                    
-                    self.frame_count += 1
-                    
-                    # Log progress every 30 frames
-                    if self.frame_count % 30 == 0:
-                        elapsed = time.time() - self.start_time
-                        current_fps = self.frame_count / elapsed
-                        print(f"Recording: {self.frame_count} frames, {elapsed:.1f}s ({current_fps:.1f} fps)")
-                    
-                    # Sleep only if we're ahead of schedule
+                            # Only add overlays if needed and not too far behind
+                            if self.config['overlay']['timestamp'] or self.config['overlay']['gps']:
+                                frame_with_overlay = self._add_overlays(frame)
+                            else:
+                                frame_with_overlay = frame
+                            
+                            # Write to file if writer is ready
+                            if self.video_writer.isOpened():
+                                self.video_writer.write(frame_with_overlay)
+                            else:
+                                print("⚠ Video writer is not opened!")
+                                break
+                            
+                            # Write to HLS stream in background if enabled and not too far behind
+                            if (self.config['hls']['enabled'] and FFMPEG_AVAILABLE and 
+                                hasattr(self, 'hls_process') and read_time < 0.1):
+                                try:
+                                    self.hls_process.stdin.write(frame.tobytes())
+                                except (BrokenPipeError, OSError):
+                                    pass  # Skip HLS if having issues
+                            
+                            self.frame_count += 1
+                            frame_processed = True
+                            
+                            # Log progress every 30 frames
+                            if self.frame_count % 30 == 0:
+                                elapsed = time.time() - self.start_time
+                                current_fps = self.frame_count / elapsed
+                                print(f"Recording: {self.frame_count} frames, {elapsed:.1f}s ({current_fps:.1f} fps)")
+                            
+                        except IOError as e:
+                            if "No space left on device" in str(e):
+                                print("⚠ Storage full, waiting for cleanup...")
+                                time.sleep(0.1)  # Wait briefly for background cleanup
+                                continue
+                            raise
+                            
+                    # Only sleep if we processed the frame quickly
                     current_time = time.time()
-                    if current_time < target_time:
+                    if current_time < target_time and read_time < 0.05:
                         time.sleep(target_time - current_time)
                     
                 except Exception as e:
