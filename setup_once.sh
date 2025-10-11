@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
+sudo apt update
+sudo apt upgrade
 sudo apt-get install -y ffmpeg fonts-dejavu-core python3-libgpiod 
 
 # ============================================================================
