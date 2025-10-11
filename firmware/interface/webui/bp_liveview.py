@@ -45,7 +45,7 @@ def _mjpeg_from_hls():
                 yield chunk
             else:
                 # No data available, yield empty chunk to keep connection alive
-                yield b''\n'
+                yield b''
     finally:
         try:
             process.kill()
@@ -137,8 +137,8 @@ def live_mjpg():
         )
     
     # Wait for HLS to be ready
-    if not _wait_for_hls_ready(timeout=5.0):
-        print("❌ HLS not ready after 5s")
+    if not _wait_for_hls_ready(timeout=1.0):  # Match the default timeout
+        print("❌ HLS not ready after 1s")
         return Response(
             "HLS stream not ready. Please wait for recorder to initialize.",
             status=503,
