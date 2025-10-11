@@ -313,7 +313,74 @@ class VideoRecorder:
         print(f"⚠ Signal {signum} received, stopping recording")
         self.stop_recording()
         sys.exit(0)
+    def cleanup(self):
+        """Clean up all resources safely"""
+        print("🧹 Cleaning up recorder...")
 
-# ---------------- MAIN ----------------
+        # Stop recording first
+        self.stop_recording()
+
+        # Stop HLS streaming
+        self._stop_hls_stream()
+
+        # Close FFmpeg recording process
+        if self.current_recorder_process:
+            try:
+                print("⏹ Stopping FFmpeg recorder...")
+                self.current_recorder_process.stdin.close()
+                self.current_recorder_process.wait(timeout=3)
+                print("✓ FFmpeg recorder stopped")
+            except:
+                print("⚠ Force killing FFmpeg recorder...")
+                self.current_recorder_process.kill()
+            self.current_recorder_process = None
+
+        # Stop camera
+        if self.camera:
+            try:
+                self.camera.stop()
+            except Exception as e:
+                print(f"⚠ Camera stop error: {e}")
+
+        # Turn off LED
+        if self.record_led:
+            try:
+                self.record_led.off()
+                self.record_led.cleanup()
+            except Exception as e:
+                print(f"⚠ LED cleanup error: {e}")
+
+        # Cleanup Microphone
+        if self.micro:
+            try:
+                # Stop any ongoing recording
+                print("✓ Microphone cleanup completed")
+            except Exception as e:
+                print(f"⚠ Microphone cleanup error: {e}")
+
+        # Cleanup GNSS
+        if self.gnss:
+            try:
+                self.gnss.close()
+            except Exception as e:
+                print(f"⚠ GNSS cleanup error: {e}")
+
+        # Cleanup RTC
+        if self.rtc:
+            try:
+                self.rtc.close()
+            except Exception as e:
+                print(f"⚠ RTC cleanup error: {e}")
+
+        print("✓ Recorder cleanup completed")
+
 if __name__ == "__main__":
     rec = VideoRecorder()
+    print("🎬 Recorder started. Press Ctrl+C to stop.")
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("🛑 Stopping recorder...")
+        rec.stop_recording()
+        rec.cleanup()
