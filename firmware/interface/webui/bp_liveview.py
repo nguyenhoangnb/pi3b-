@@ -1,7 +1,7 @@
 from __future__ import annotations
 from flask import Blueprint, Response, send_from_directory
 from pathlib import Path
-import subprocess
+import ffmpeg
 import time
 from .helpers import rec_is_active, cfg_get, get_recorder, start_service, check_service
 
@@ -12,63 +12,58 @@ HLS_DIR.mkdir(parents=True, exist_ok=True)
 
 def _mjpeg_from_hls():
     """Convert HLS stream to MJPEG"""
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-re",  # Read input at native frame rate
-        "-i", str(HLS_DIR / "live.m3u8"),
-        "-f", "mpjpeg",
-        "-q:v", "7",
-        "-pix_fmt", "yuvj422p",
-        "-boundary_tag", "frame",
-        "-"
-    ]
-    
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
     try:
+        process = (
+            ffmpeg
+            .input(str(HLS_DIR / "live.m3u8"), re=None)
+            .output('pipe:', format='mpjpeg', **{
+                'q:v': 7,
+                'pix_fmt': 'yuvj422p',
+                'boundary_tag': 'frame'
+            })
+            .run_async(pipe_stdout=True, pipe_stderr=True, quiet=True)
+        )
+        
         while True:
-            chunk = p.stdout.read(4096)
+            chunk = process.stdout.read(4096)
             if not chunk:
                 break
             yield chunk
     finally:
         try:
-            p.kill()
-            p.wait(timeout=2)
+            process.kill()
+            process.wait()
         except:
             pass
 
 
 def _mjpeg_from_v4l2(dev: str, fmt: str):
     """Stream MJPEG directly from camera"""
-    cmd = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-f", "v4l2",
-        "-input_format", "yuyv422",
-        "-framerate", "15",
-        "-video_size", fmt,
-        "-i", dev,
-        "-f", "mpjpeg",
-        "-q:v", "7",
-        "-pix_fmt", "yuvj422p",
-        "-boundary_tag", "frame",
-        "-"
-    ]
-    
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
     try:
+        # Parse width and height from format string (e.g., "1280x720")
+        width, height = fmt.split('x')
+        
+        process = (
+            ffmpeg
+            .input(dev, format='v4l2', input_format='yuyv422', 
+                   framerate=15, video_size=fmt)
+            .output('pipe:', format='mpjpeg', **{
+                'q:v': 7,
+                'pix_fmt': 'yuvj422p',
+                'boundary_tag': 'frame'
+            })
+            .run_async(pipe_stdout=True, pipe_stderr=True, quiet=True)
+        )
+        
         while True:
-            chunk = p.stdout.read(4096)
+            chunk = process.stdout.read(4096)
             if not chunk:
                 break
             yield chunk
     finally:
         try:
-            p.kill()
-            p.wait(timeout=2)
+            process.kill()
+            process.wait()
         except:
             pass
 

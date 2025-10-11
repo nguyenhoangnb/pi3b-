@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Video Recording Module with LED control and overlays
+Video Recording Module with FFmpeg-python library
 Handles automatic recording with GPS, audio, and time overlays
 HLS streaming from single camera source
 """
@@ -13,14 +13,18 @@ import signal
 import cv2
 import numpy as np
 from datetime import datetime
-import subprocess
 from pathlib import Path
 import shutil
 
-# Add project path for imports
+# FFmpeg-python library
+try:
+    import ffmpeg
+except ImportError:
+    print("❌ ffmpeg-python not installed. Install with: pip install ffmpeg-python")
+    sys.exit(1)
+
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from firmware.hal.camera import FFmpegCamera
 from firmware.hal.usb_manager import USBManager
 from firmware.hal.gpio_leds import gpioLed
 from firmware.hal.gnss import GNSSModule
@@ -42,19 +46,19 @@ except Exception as e:
         def save(self, *args, **kwargs):
             pass
 
+
 class VideoRecorder:
     def __init__(self, config_file=None):
         """Initialize video recorder with configuration"""
         self.config = self._load_config(config_file)
 
         # Components
-        self.camera = None
         self.usb_manager = None
         self.record_led = None
         self.micro = None
         self.gnss = None
         self.rtc = None
-        self.rtc_lock = threading.Lock()  # ← lock để thread-safe đọc RTC
+        self.rtc_lock = threading.Lock()
 
         # Recording state
         self.is_recording = False
@@ -62,6 +66,12 @@ class VideoRecorder:
         self.segment_start_time = None
         self.recording_thread = None
         self._stop_recording = False
+
+        # Camera stream
+        self.camera_stream = None
+        self.frame_queue = []
+        self.frame_queue_lock = threading.Lock()
+        self.max_queue_size = 30
 
         # HLS streaming
         self.hls_dir = Path("/tmp/picam_hls")
@@ -88,16 +98,14 @@ class VideoRecorder:
         print("🚀 Auto-starting recording...")
         self.start_recording()
 
-    # ---------------- CONFIG ----------------
+    # ============ CONFIG ============
     def _load_config(self, config_file=None):
         """Load configuration from YAML file or use defaults"""
-        # Determine config file path
         if config_file is None:
             config_file = Path(__file__).parent.parent / 'config' / 'device_full.yaml'
         else:
             config_file = Path(config_file)
         
-        # Try to load YAML config
         if config_file.exists():
             try:
                 yaml_config = load(config_file)
@@ -105,16 +113,13 @@ class VideoRecorder:
                 return self._parse_yaml_config(yaml_config)
             except Exception as e:
                 print(f"⚠ Error loading config: {e}")
-                print("⚠ Falling back to default config")
                 return self._get_default_config()
         else:
             print(f"⚠ Config file not found: {config_file}")
-            print("⚠ Using default config")
             return self._get_default_config()
 
     def _parse_yaml_config(self, yaml_config):
         """Parse YAML config and convert to recorder internal format"""
-        # Extract sections
         video = yaml_config.get('video', {})
         audio = yaml_config.get('audio', {})
         storage = yaml_config.get('storage', {})
@@ -123,7 +128,6 @@ class VideoRecorder:
         caps = yaml_config.get('capabilities', {})
         device_info = yaml_config.get('device', {})
         
-        # Parse video format
         v4l2_format = video.get('v4l2_format', '640x480')
         try:
             width, height = map(int, v4l2_format.split('x'))
@@ -131,7 +135,6 @@ class VideoRecorder:
             print(f"⚠ Invalid v4l2_format '{v4l2_format}', using 640x480")
             width, height = 640, 480
         
-        # Build internal config
         config = {
             'camera': {
                 'device': video.get('v4l2_device', '/dev/video0'),
@@ -141,7 +144,7 @@ class VideoRecorder:
             },
             'audio': {
                 'enabled': caps.get('audio', False),
-                'device': audio.get('device'),  # None = auto-detect
+                'device': audio.get('device'),
                 'sample_rate': audio.get('sample_rate', 48000),
                 'channels': audio.get('channels', 1)
             },
@@ -233,30 +236,18 @@ class VideoRecorder:
             }
         }
 
-    # ---------------- COMPONENTS ----------------
+    # ============ COMPONENTS ============
     def _initialize_components(self):
         try:
-            # Camera
-            cam = self.config['camera']
-            self.camera = FFmpegCamera(
-                device=cam['device'],
-                width=cam['width'],
-                height=cam['height'],
-                fps=cam['fps']
-            )
-            print("✓ Camera initialized")
-
-            # Storage manager
             storage = self.config['storage']
             self.usb_manager = USBManager(
                 path=storage['path'],
                 min_free_gb=storage['min_free_gb'],
-                min_free_percent=10  # Fixed at 10%
+                min_free_percent=10
             )
             print("✓ USB Manager initialized")
             self.segment_duration = storage['segment_seconds']
             
-            # LED
             self.record_led = gpioLed(self.config['gpio']['record_led'])
             print("✓ Record LED initialized")
 
@@ -270,11 +261,7 @@ class VideoRecorder:
                     self.enable_audio = self.micro.check_device_available()
                 except Exception as e:
                     print(f"⚠ Microphone not available: {e}")
-                    self.micro = None
                     self.enable_audio = False
-            else:
-                self.micro = None
-                self.enable_audio = False
 
             if self.config.get('capabilities', {}).get('gnss', False):
                 try:
@@ -282,19 +269,12 @@ class VideoRecorder:
                     print("✓ GNSS initialized")
                 except Exception as e:
                     print(f"⚠ GNSS not available: {e}")
-                    self.gnss = None
                     self.enable_gps_overlay = False
-            else:
-                self.gnss = None
-                self.enable_gps_overlay = False
 
-            # RTC (optional - only if you really need hardware RTC)
-            # Disable if getting "Device or resource busy" errors
             if self.config.get('capabilities', {}).get('rtc', False):
                 try:
                     self.rtc = rtcModule()
                     print("✓ RTC module initialized")
-                    # Test read RTC to ensure it works
                     try:
                         _ = self.rtc.read_time()
                     except Exception as e:
@@ -303,22 +283,17 @@ class VideoRecorder:
                         self.rtc = None
                 except Exception as e:
                     print(f"⚠ RTC not available: {e}")
-                    self.rtc = None
-            else:
-                print("ℹ RTC disabled in config")
-                self.rtc = None
 
             self._setup_hls_streaming()
         except Exception as e:
             print(f"✗ Component initialization error: {e}")
             raise
 
-    # ---------------- RTC / TIME ----------------
+    # ============ RTC / TIME ============
     def _get_time_text(self):
         """Get time text with RTC fallback to system time"""
         try:
             if self.rtc:
-                # Try to acquire lock with timeout
                 if self.rtc_lock.acquire(blocking=False):
                     try:
                         dt = self.rtc.read_time()
@@ -326,23 +301,16 @@ class VideoRecorder:
                     finally:
                         self.rtc_lock.release()
                 else:
-                    # Lock busy, use system time
                     dt = datetime.now()
                     return dt.strftime("%Y-%m-%d %H:%M:%S")
             else:
-                # No RTC, use system time
                 dt = datetime.now()
                 return dt.strftime("%Y-%m-%d %H:%M:%S")
-        except OSError as e:
-            # RTC hardware busy, fallback to system time (suppress warning spam)
-            dt = datetime.now()
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
-        except Exception as e:
-            # Any other error, use system time
+        except:
             dt = datetime.now()
             return dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    # ---------------- GPS / OVERLAY ----------------
+    # ============ GPS / OVERLAY ============
     def _get_gps_text(self):
         if not self.gnss or not self.enable_gps_overlay:
             return ""
@@ -354,7 +322,7 @@ class VideoRecorder:
                 return f"GPS: {lat:.6f}, {lon:.6f}"
             else:
                 return "GPS: No Fix"
-        except Exception:
+        except:
             return "GPS: Error"
 
     def _add_overlays(self, frame):
@@ -364,22 +332,24 @@ class VideoRecorder:
         height, width = frame.shape[:2]
         cfg = self.config['overlay']
 
-        # Time overlay
         if self.enable_time_overlay and cfg.get('timestamp_enabled', True):
             time_text = self._get_time_text()
-            cv2.putText(frame, time_text, (10, height - 10), cv2.FONT_HERSHEY_SIMPLEX, cfg['font_scale'], cfg['text_color'], cfg['font_thickness'], cv2.LINE_AA)
+            cv2.putText(frame, time_text, (10, height - 10), cv2.FONT_HERSHEY_SIMPLEX, 
+                       cfg['font_scale'], cfg['text_color'], cfg['font_thickness'], cv2.LINE_AA)
 
-        # GPS overlay
         if self.enable_gps_overlay and cfg.get('gps_enabled', False):
             gps_text = self._get_gps_text()
-            cv2.putText(frame, gps_text, (10, height - 30), cv2.FONT_HERSHEY_SIMPLEX, cfg['font_scale'], cfg['text_color'], cfg['font_thickness'], cv2.LINE_AA)
+            cv2.putText(frame, gps_text, (10, height - 30), cv2.FONT_HERSHEY_SIMPLEX, 
+                       cfg['font_scale'], cfg['text_color'], cfg['font_thickness'], cv2.LINE_AA)
 
         return frame
+
     def _should_create_new_segment(self):
         if not self.segment_start_time:
             return True
         return (time.time() - self.segment_start_time) >= self.segment_duration
-    # ---------------- HLS STREAM ----------------
+
+    # ============ HLS STREAM ============
     def _setup_hls_streaming(self):
         """Setup HLS streaming directory"""
         self.hls_dir.mkdir(parents=True, exist_ok=True)
@@ -387,7 +357,7 @@ class VideoRecorder:
             print(f"🎬 HLS streaming directory: {self.hls_dir}")
     
     def _start_hls_stream(self):
-        """Start HLS streaming process"""
+        """Start HLS streaming process using ffmpeg-python"""
         if not self.hls_enabled or self.hls_process:
             return False
         
@@ -398,39 +368,38 @@ class VideoRecorder:
             for f in self.hls_dir.glob("*.m3u8"):
                 f.unlink()
             
-            # HLS output path
             hls_playlist = self.hls_dir / "live.m3u8"
-            
-            # FFmpeg command for HLS streaming
             width, height, fps = self.config['camera']['width'], self.config['camera']['height'], self.config['camera']['fps']
-            cmd = [
-                "ffmpeg",
-                "-f", "rawvideo",
-                "-pix_fmt", "bgr24",
-                "-s", f"{width}x{height}",
-                "-r", str(fps),
-                "-i", "pipe:0",  # Read from stdin
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-tune", "zerolatency",
-                "-b:v", "500k",  # Lower bitrate for streaming
-                "-g", str(fps * 2),  # Keyframe every 2 seconds
-                "-pix_fmt", "yuv420p",  # Standard pixel format
-                "-f", "hls",
-                "-hls_time", "2",  # 2 second segments
-                "-hls_list_size", "5",  # Keep 5 segments in playlist
-                "-hls_flags", "delete_segments",  # Auto-delete old segments
-                "-hls_segment_filename", str(self.hls_dir / "segment_%03d.ts"),
-                str(hls_playlist)
-            ]
+            
+            # Build FFmpeg command using ffmpeg-python
+            stream = (
+                ffmpeg
+                .input('pipe:0', format='rawvideo', pix_fmt='bgr24', s=f'{width}x{height}', r=fps)
+                .video.filter('scale', 1280, 720)
+                .output(str(hls_playlist),
+                    codec_video='libx264',
+                    preset='ultrafast',
+                    tune='zerolatency',
+                    b_v='500k',
+                    g=int(fps * 2),
+                    pix_fmt='yuv420p',
+                    f='hls',
+                    hls_time=2,
+                    hls_list_size=5,
+                    hls_flags='delete_segments',
+                    hls_segment_filename=str(self.hls_dir / 'segment_%03d.ts')
+                )
+                .compile(cmd='ffmpeg', args=['-hide_banner', '-loglevel', 'error'])
+            )
             
             print(f"🌐 Starting HLS stream: {hls_playlist}")
-            self.hls_process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                bufsize=10**6
+            self.hls_process = ffmpeg.run_async(
+                stream[0],
+                cmd='ffmpeg',
+                pipe_stdin=True,
+                pipe_stdout=False,
+                pipe_stderr=False,
+                quiet=True
             )
             print("✓ HLS stream started")
             return True
@@ -445,11 +414,13 @@ class VideoRecorder:
         if self.hls_process:
             try:
                 self.hls_process.stdin.close()
-                self.hls_process.terminate()
                 self.hls_process.wait(timeout=2)
                 print("✓ HLS stream stopped")
             except:
-                self.hls_process.kill()
+                try:
+                    self.hls_process.kill()
+                except:
+                    pass
             self.hls_process = None
     
     def _write_frame_to_hls(self, frame):
@@ -457,7 +428,6 @@ class VideoRecorder:
         if not self.hls_process:
             return False
         
-        # Check if HLS process is still alive
         if self.hls_process.poll() is not None:
             self.hls_process = None
             return False
@@ -469,150 +439,16 @@ class VideoRecorder:
         except (BrokenPipeError, OSError):
             self.hls_process = None
             return False
-    
-    def _write_frame_to_ffmpeg(self, frame):
-        """Write frame to FFmpeg stdin pipe"""
-        if not self.current_recorder_process:
-            return False
-        
-        # Check if FFmpeg process is still alive
-        if self.current_recorder_process.poll() is not None:
-            # FFmpeg died, read stderr
-            try:
-                stderr = self.current_recorder_process.stderr.read().decode('utf-8', errors='ignore')
-                print(f"✗ FFmpeg died: {stderr}")
-            except:
-                print("✗ FFmpeg died (no stderr)")
-            self.current_recorder_process = None
-            self.segment_start_time = 0  # Force new segment
-            return False
-        
-        try:
-            # Write frame bytes to FFmpeg stdin
-            self.current_recorder_process.stdin.write(frame.tobytes())
-            self.current_recorder_process.stdin.flush()
-            return True
-        except BrokenPipeError:
-            print("⚠ FFmpeg pipe broken, will create new segment")
-            self.segment_start_time = 0  # Force new segment
-            self.current_recorder_process = None
-            return False
-        except Exception as e:
-            print(f"⚠ Error writing frame to FFmpeg: {e}")
-            return False
 
-    # ---------------- RECORDING LOOP ----------------
-    def _recording_loop(self):
-        print("🎥 Recording thread started")
-        
-        # Start camera FIRST before creating segment
-        try:
-            self.camera.start()
-            print("✓ Camera started in recording loop")
-        except Exception as e:
-            print(f"✗ Failed to start camera: {e}")
-            return
-        
-        # Test camera by reading a frame
-        print("📸 Testing camera...")
-        test_frame = self.camera.read_frame()
-        if test_frame is None:
-            print("✗ Camera test failed - no frames available!")
-            return
-        print(f"✓ Camera test OK - frame shape: {test_frame.shape}")
-        
-        # Start HLS stream
-        if self.hls_enabled:
-            self._start_hls_stream()
-        
-        frame_count = 0
-        last_report = time.time()
-        no_frame_count = 0  # Track consecutive failed frame reads
-        
-        while not self._stop_recording:
-            # Create new segment if needed
-            if self._should_create_new_segment():
-                if not self._create_new_segment():
-                    print("✗ Failed to create segment, retrying in 5s...")
-                    time.sleep(5)
-                    continue
-
-            # Read frame from camera
-            frame = self.camera.read_frame()
-            if frame is None:
-                no_frame_count += 1
-                # If no frames for 3 seconds, try to restart camera
-                if no_frame_count > 300:  # 300 * 0.01s = 3s
-                    print("⚠ No frames from camera for 3s, attempting restart...")
-                    try:
-                        self.camera.stop()
-                        time.sleep(1)
-                        self.camera.start()
-                        print("✓ Camera restarted")
-                        no_frame_count = 0
-                    except Exception as e:
-                        print(f"✗ Camera restart failed: {e}")
-                        # Wait before retry
-                        time.sleep(5)
-                        no_frame_count = 0
-                time.sleep(0.01)
-                continue
-            
-            # Reset no-frame counter on successful read
-            no_frame_count = 0
-
-            # Add overlays
-            frame_with_overlay = self._add_overlays(frame)
-            
-            # Write to recording FFmpeg
-            if self._write_frame_to_ffmpeg(frame_with_overlay):
-                frame_count += 1
-            
-            # Write to HLS stream (if enabled)
-            if self.hls_enabled:
-                self._write_frame_to_hls(frame_with_overlay)
-            
-            # Report progress every 5 seconds
-            if time.time() - last_report >= 5.0:
-                fps = frame_count / 5.0
-                print(f"📊 Recording: {frame_count} frames in 5s ({fps:.1f} fps)")
-                frame_count = 0
-                last_report = time.time()
-
-            # Don't sleep - read as fast as camera provides frames
-
-        # Cleanup HLS stream
-        if self.hls_enabled:
-            self._stop_hls_stream()
-        
-        # Cleanup FFmpeg when stopping
-        if self.current_recorder_process:
-            try:
-                self.current_recorder_process.stdin.close()
-                self.current_recorder_process.wait(timeout=2)
-                print("✓ FFmpeg process closed")
-            except:
-                self.current_recorder_process.kill()
-            self.current_recorder_process = None
-        
-        # Stop camera
-        try:
-            self.camera.stop()
-            print("✓ Camera stopped")
-        except:
-            pass
-
+    # ============ RECORDING ============
     def _create_new_segment(self):
-        """Create new recording segment with FFmpeg"""
-        # Đảm bảo USB sẵn sàng
+        """Create new recording segment using ffmpeg-python with audio support"""
         if not self.usb_manager.is_available():
             print("⚠ USB not available, waiting...")
             self.usb_manager.wait_until_available()
 
-        # Kiểm tra dung lượng
         if not self.usb_manager.has_enough_space():
             print("⚠ Not enough space, cleaning up old files...")
-            # TODO: Implement cleanup old files
             return False
 
         # Close previous FFmpeg process
@@ -620,12 +456,9 @@ class VideoRecorder:
             try:
                 print("⏹ Closing previous segment...")
                 self.current_recorder_process.stdin.close()
-                # Don't wait - just terminate immediately to avoid blocking
-                self.current_recorder_process.terminate()
-                # Give it 0.5s to finish gracefully, then kill
                 try:
                     self.current_recorder_process.wait(timeout=0.5)
-                except subprocess.TimeoutExpired:
+                except:
                     self.current_recorder_process.kill()
                 print("✓ Previous segment closed")
             except Exception as e:
@@ -642,74 +475,72 @@ class VideoRecorder:
         base_dir.mkdir(parents=True, exist_ok=True)
         output_file = base_dir / f"{now}.mp4"
 
-        # Build FFmpeg command
         width, height, fps = self.config['camera']['width'], self.config['camera']['height'], self.config['camera']['fps']
-        cmd = [
-            "ffmpeg",
-            "-y",  # overwrite
-            "-f", "rawvideo",
-            "-pix_fmt", "bgr24",
-            "-s", f"{width}x{height}",
-            "-r", str(fps),
-            "-i", "pipe:0"  # Read video from stdin
-        ]
-
-        # Add audio if available
-        if self.micro and self.enable_audio:
-            audio_device = self.config['audio'].get('device') or "hw:1,0"
-            # Convert hw:X,Y to plughw:X,Y for FFmpeg (plughw provides format conversion)
-            if audio_device.startswith("hw:"):
-                ffmpeg_audio_device = audio_device.replace("hw:", "plughw:", 1)
-            else:
-                ffmpeg_audio_device = audio_device
-            
-            audio_rate = self.config['audio'].get('sample_rate', 48000)
-            audio_ch = self.config['audio'].get('channels', 1)
-            cmd.extend([
-                "-f", "alsa",
-                "-thread_queue_size", "512",
-                "-ac", str(audio_ch),
-                "-ar", str(audio_rate),
-                "-i", ffmpeg_audio_device,
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-map", "0:v:0",
-                "-map", "1:a:0"
-            ])
-            print(f"✓ Audio enabled: {ffmpeg_audio_device}")
-        else:
-            cmd.extend(["-an"])
-            print("ℹ Audio disabled")
-
-        # Video encoding - use software encoder for stability
-        cmd.extend([
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-tune", "zerolatency",
-            "-b:v", "1M",
-            "-pix_fmt", "yuv420p",
-            "-shortest",  # Stop when shortest input ends (video or audio)
-            "-fflags", "+genpts",  # Generate presentation timestamps
-            "-max_interleave_delta", "0",  # Don't wait for audio/video sync
-            str(output_file)
-        ])
-
-        # Start FFmpeg process
-        print(f"🎬 Starting FFmpeg: {' '.join(cmd)}")
+        
         try:
-            self.current_recorder_process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                bufsize=10**7
+            # Build video input from pipe
+            video = ffmpeg.input('pipe:0', format='rawvideo', pix_fmt='bgr24', s=f'{width}x{height}', r=fps)
+            video = video.video.filter('scale', width, height)
+            
+            # Check if audio is enabled
+            if self.micro and self.enable_audio:
+                audio_device = self.config['audio'].get('device', 'hw:1,0')
+                if audio_device.startswith("hw:"):
+                    ffmpeg_audio_device = audio_device.replace("hw:", "plughw:", 1)
+                else:
+                    ffmpeg_audio_device = audio_device
+                
+                audio_rate = self.config['audio'].get('sample_rate', 48000)
+                audio_ch = self.config['audio'].get('channels', 1)
+                
+                # Build audio input from ALSA device
+                audio = ffmpeg.input(ffmpeg_audio_device, f='alsa', ac=audio_ch, ar=audio_rate, 
+                                    thread_queue_size='512')
+                
+                # Combine video and audio
+                output = ffmpeg.output(video, audio, str(output_file),
+                    codec_v='libx264',
+                    preset='ultrafast',
+                    tune='zerolatency',
+                    b_v='1M',
+                    pix_fmt='yuv420p',
+                    codec_a='aac',
+                    b_a='128k',
+                    max_interleave_delta='0',
+                    fflags='+genpts'
+                )
+                
+                print(f"✓ Audio enabled: {ffmpeg_audio_device} ({audio_rate}Hz, {audio_ch}ch)")
+            else:
+                # Video only
+                output = ffmpeg.output(video, str(output_file),
+                    codec_v='libx264',
+                    preset='ultrafast',
+                    tune='zerolatency',
+                    b_v='1M',
+                    pix_fmt='yuv420p',
+                    an=None,  # No audio
+                    max_interleave_delta='0',
+                    fflags='+genpts'
+                )
+                print("ℹ Audio disabled")
+            
+            # Compile command
+            cmd = output.compile(cmd='ffmpeg', args=['-hide_banner', '-loglevel', 'error', '-y'])
+            
+            print(f"🎬 Starting FFmpeg recording: {output_file}")
+            
+            self.current_recorder_process = ffmpeg.run_async(
+                cmd[0],
+                pipe_stdin=True,
+                pipe_stdout=False,
+                pipe_stderr=False,
+                quiet=True
             )
             
-            # Check if FFmpeg started successfully
             time.sleep(0.2)
             if self.current_recorder_process.poll() is not None:
-                stderr = self.current_recorder_process.stderr.read().decode('utf-8', errors='ignore')
-                print(f"✗ FFmpeg died immediately: {stderr}")
+                print(f"✗ FFmpeg died immediately")
                 self.current_recorder_process = None
                 return False
             
@@ -719,9 +550,159 @@ class VideoRecorder:
             
         except Exception as e:
             print(f"✗ Failed to start FFmpeg: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
-    # ---------------- RECORDING CONTROL ----------------
+    def _recording_loop(self):
+        """Main recording loop with camera capture"""
+        print("🎥 Recording thread started")
+        
+        try:
+            # Start camera capture using ffmpeg-python
+            width, height, fps = self.config['camera']['width'], self.config['camera']['height'], self.config['camera']['fps']
+            
+            camera_stream = (
+                ffmpeg
+                .input(self.config['camera']['device'], f='v4l2', video_size=f'{width}x{height}', framerate=fps)
+                .output('pipe:1', format='rawvideo', pix_fmt='bgr24')
+                .compile(cmd='ffmpeg', args=['-hide_banner', '-loglevel', 'error'])
+            )
+            
+            print(f"📸 Starting camera: {self.config['camera']['device']}")
+            self.camera_stream = ffmpeg.run_async(
+                camera_stream[0],
+                cmd='ffmpeg',
+                pipe_stdin=False,
+                pipe_stdout=True,
+                pipe_stderr=False,
+                quiet=True
+            )
+            
+            # Test read frame
+            frame_size = width * height * 3
+            test_buf = self.camera_stream.stdout.read(frame_size)
+            if not test_buf or len(test_buf) < frame_size:
+                print("✗ Camera test failed - no frames available!")
+                return
+            
+            test_frame = np.frombuffer(test_buf, dtype=np.uint8).reshape((height, width, 3))
+            print(f"✓ Camera test OK - frame shape: {test_frame.shape}")
+            
+            # Start HLS stream
+            if self.hls_enabled:
+                self._start_hls_stream()
+            
+            frame_count = 0
+            last_report = time.time()
+            no_frame_count = 0
+            
+            while not self._stop_recording:
+                # Create new segment if needed
+                if self._should_create_new_segment():
+                    if not self._create_new_segment():
+                        print("✗ Failed to create segment, retrying in 5s...")
+                        time.sleep(5)
+                        continue
+
+                # Read frame from camera
+                frame_buf = self.camera_stream.stdout.read(frame_size)
+                if not frame_buf or len(frame_buf) < frame_size:
+                    no_frame_count += 1
+                    if no_frame_count > 300:
+                        print("⚠ No frames from camera for 3s, attempting restart...")
+                        try:
+                            if self.hls_enabled and self.hls_process:
+                                self._stop_hls_stream()
+                            
+                            self.camera_stream.stdin.close()
+                            self.camera_stream.wait()
+                            time.sleep(1)
+                            
+                            # Restart camera
+                            self.camera_stream = ffmpeg.run_async(
+                                camera_stream[0],
+                                cmd='ffmpeg',
+                                pipe_stdin=False,
+                                pipe_stdout=True,
+                                pipe_stderr=False,
+                                quiet=True
+                            )
+                            print("✓ Camera restarted")
+                            
+                            if self.hls_enabled:
+                                time.sleep(0.5)
+                                self._start_hls_stream()
+                            
+                            self.segment_start_time = 0
+                            no_frame_count = 0
+                        except Exception as e:
+                            print(f"✗ Camera restart failed: {e}")
+                            time.sleep(5)
+                            no_frame_count = 0
+                    time.sleep(0.01)
+                    continue
+                
+                no_frame_count = 0
+                frame = np.frombuffer(frame_buf, dtype=np.uint8).reshape((height, width, 3))
+                
+                # Add overlays
+                frame_with_overlay = self._add_overlays(frame)
+                
+                # Write to recording FFmpeg
+                if self.current_recorder_process:
+                    try:
+                        self.current_recorder_process.stdin.write(frame_with_overlay.tobytes())
+                        self.current_recorder_process.stdin.flush()
+                        frame_count += 1
+                    except (BrokenPipeError, OSError):
+                        print("⚠ FFmpeg pipe broken, will create new segment")
+                        self.segment_start_time = 0
+                        self.current_recorder_process = None
+                
+                # Write to HLS stream
+                if self.hls_enabled:
+                    self._write_frame_to_hls(frame_with_overlay)
+                
+                # Report progress every 5 seconds
+                if time.time() - last_report >= 5.0:
+                    fps = frame_count / 5.0
+                    print(f"📊 Recording: {frame_count} frames in 5s ({fps:.1f} fps)")
+                    frame_count = 0
+                    last_report = time.time()
+
+        except Exception as e:
+            print(f"✗ Recording loop error: {e}")
+        finally:
+            # Cleanup
+            if self.hls_enabled:
+                self._stop_hls_stream()
+            
+            if self.current_recorder_process:
+                try:
+                    self.current_recorder_process.stdin.close()
+                    self.current_recorder_process.wait(timeout=2)
+                    print("✓ FFmpeg process closed")
+                except:
+                    try:
+                        self.current_recorder_process.kill()
+                    except:
+                        pass
+                self.current_recorder_process = None
+            
+            if self.camera_stream:
+                try:
+                    self.camera_stream.stdin.close()
+                    self.camera_stream.wait(timeout=2)
+                    print("✓ Camera stopped")
+                except:
+                    try:
+                        self.camera_stream.kill()
+                    except:
+                        pass
+                self.camera_stream = None
+
+    # ============ CONTROL ============
     def start_recording(self):
         if self.is_recording:
             print("ℹ Already recording")
@@ -743,22 +724,17 @@ class VideoRecorder:
         self.is_recording = False
         print("🛑 Recording stopped")
 
-    # ---------------- SIGNAL HANDLER ----------------
     def _signal_handler(self, signum, frame):
         print(f"⚠ Signal {signum} received, stopping recording")
         self.stop_recording()
         sys.exit(0)
+
     def cleanup(self):
         """Clean up all resources safely"""
         print("🧹 Cleaning up recorder...")
-
-        # Stop recording first
         self.stop_recording()
-
-        # Stop HLS streaming
         self._stop_hls_stream()
 
-        # Close FFmpeg recording process
         if self.current_recorder_process:
             try:
                 print("⏹ Stopping FFmpeg recorder...")
@@ -766,18 +742,23 @@ class VideoRecorder:
                 self.current_recorder_process.wait(timeout=3)
                 print("✓ FFmpeg recorder stopped")
             except:
-                print("⚠ Force killing FFmpeg recorder...")
-                self.current_recorder_process.kill()
+                try:
+                    self.current_recorder_process.kill()
+                except:
+                    pass
             self.current_recorder_process = None
 
-        # Stop camera
-        if self.camera:
+        if self.camera_stream:
             try:
-                self.camera.stop()
-            except Exception as e:
-                print(f"⚠ Camera stop error: {e}")
+                self.camera_stream.stdin.close()
+                self.camera_stream.wait(timeout=2)
+            except:
+                try:
+                    self.camera_stream.kill()
+                except:
+                    pass
+            self.camera_stream = None
 
-        # Turn off LED
         if self.record_led:
             try:
                 self.record_led.off()
@@ -785,22 +766,12 @@ class VideoRecorder:
             except Exception as e:
                 print(f"⚠ LED cleanup error: {e}")
 
-        # Cleanup Microphone
-        if self.micro:
-            try:
-                # Stop any ongoing recording
-                print("✓ Microphone cleanup completed")
-            except Exception as e:
-                print(f"⚠ Microphone cleanup error: {e}")
-
-        # Cleanup GNSS
         if self.gnss:
             try:
                 self.gnss.close()
             except Exception as e:
                 print(f"⚠ GNSS cleanup error: {e}")
 
-        # Cleanup RTC
         if self.rtc:
             try:
                 self.rtc.close()
@@ -808,6 +779,7 @@ class VideoRecorder:
                 print(f"⚠ RTC cleanup error: {e}")
 
         print("✓ Recorder cleanup completed")
+
 
 if __name__ == "__main__":
     rec = VideoRecorder()

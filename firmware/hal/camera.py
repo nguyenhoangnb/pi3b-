@@ -4,6 +4,7 @@ import threading
 import numpy as np
 import time
 import sys
+import ffmpeg
 
 class FFmpegCamera:
     def __init__(self, device="/dev/video0", width=640, height=480, fps=25, pix_fmt="bgr24", ffmpeg_bin="ffmpeg"):
@@ -18,14 +19,6 @@ class FFmpegCamera:
         self._stderr_thread = None
         self.frame_size = self.width * self.height * 3  # BGR24
 
-    def _build_cmd(self):
-        return [
-            self.ffmpeg_bin, "-hide_banner", "-loglevel", "warning",
-            "-f", "v4l2", "-framerate", str(self.fps),
-            "-video_size", f"{self.width}x{self.height}", "-i", self.device,
-            "-pix_fmt", self.pix_fmt, "-vcodec", "rawvideo", "-f", "rawvideo", "-"
-        ]
-
     def _drain_stderr(self, stream):
         try:
             for line in iter(stream.readline, b''):
@@ -38,11 +31,36 @@ class FFmpegCamera:
     def start(self):
         if self.proc:
             return
-        cmd = self._build_cmd()
-        self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=10**7)
-        self._stderr_thread = threading.Thread(target=self._drain_stderr, args=(self.proc.stderr,), daemon=True)
-        self._stderr_thread.start()
-        self._stop = False
+        
+        try:
+            # Use ffmpeg-python library to create camera capture process
+            self.proc = (
+                ffmpeg
+                .input(self.device, 
+                       format='v4l2',
+                       framerate=self.fps,
+                       video_size=f'{self.width}x{self.height}')
+                .output('pipe:', 
+                        format='rawvideo',
+                        pix_fmt=self.pix_fmt,
+                        vcodec='rawvideo')
+                .global_args('-hide_banner', '-loglevel', 'warning')
+                .run_async(pipe_stdout=True, pipe_stderr=True, bufsize=10**7)
+            )
+            
+            # Start stderr monitoring thread
+            self._stderr_thread = threading.Thread(
+                target=self._drain_stderr, 
+                args=(self.proc.stderr,), 
+                daemon=True
+            )
+            self._stderr_thread.start()
+            self._stop = False
+            
+        except Exception as e:
+            print(f"✗ Failed to start camera: {e}")
+            self.proc = None
+            raise
 
     def read_frame(self, timeout=None):
         if not self.proc:
