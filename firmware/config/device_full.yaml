@@ -25,7 +25,7 @@ storage:
   container: mkv
   filename_pattern: "%Y%m%d-%H%M%S.mkv"
 video:
-  v4l2_device: "/dev/video0"
+  v4l2_device: "/dev/my_camera"
   v4l2_format: "640x480"
   v4l2_fps: 30
 audio:
