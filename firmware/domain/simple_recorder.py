@@ -17,7 +17,7 @@ from firmware.hal.gpio_leds import gpioLed
 from firmware.hal.gnss import GNSSModule
 from firmware.hal.rtc import rtcModule
 from firmware.config.config_loader import load
-
+import ffmpeg
 # Check if ffmpeg is available
 try:
     # Check ffmpeg command availability
@@ -109,8 +109,33 @@ class VideoRecorder:
         # Initialize audio if enabled
         self.audio_enabled = self.config['audio']['enabled']
         if self.audio_enabled:
-            self.audio = pyaudio.PyAudio()
-            self.audio_frames = []
+            try:
+                self.audio = pyaudio.PyAudio()
+                # Find the specified audio device
+                device_found = False
+                device_info = None
+                
+                if self.config['audio'].get('device'):
+                    # Try to find device by name/id
+                    for i in range(self.audio.get_device_count()):
+                        info = self.audio.get_device_info_by_index(i)
+                        if self.config['audio']['device'] in str(info['name']):
+                            device_info = info
+                            device_found = True
+                            break
+                
+                if not device_found:
+                    # Use default device
+                    device_info = self.audio.get_default_input_device_info()
+                    print(f"⚠ Audio device not found, using default: {device_info['name']}")
+                else:
+                    print(f"✓ Using audio device: {device_info['name']}")
+                
+                self.audio_device_index = device_info['index']
+                self.audio_frames = []
+            except Exception as e:
+                print(f"⚠ Failed to initialize audio: {e}")
+                self.audio_enabled = False
         
         # Create storage path
         self.storage_path = Path(self.config['storage']['path'])
@@ -213,13 +238,19 @@ class VideoRecorder:
         
         if self.audio_enabled:
             self.audio_file = self.storage_path / f"{timestamp}.wav"
-            self.audio_stream = self.audio.open(
-                format=self.config['audio']['format'],
-                channels=self.config['audio']['channels'],
-                rate=self.config['audio']['rate'],
-                input=True,
-                frames_per_buffer=self.config['audio']['chunk']
-            )
+            try:
+                self.audio_stream = self.audio.open(
+                    format=self.config['audio']['format'],
+                    channels=self.config['audio']['channels'],
+                    rate=self.config['audio']['rate'],
+                    input=True,
+                    input_device_index=self.audio_device_index,
+                    frames_per_buffer=self.config['audio']['chunk']
+                )
+            except Exception as e:
+                print(f"⚠ Failed to open audio stream: {e}")
+                self.audio_enabled = False
+                return
             self.audio_frames = []
             self.audio_thread = threading.Thread(target=self._record_audio)
             self.audio_thread.start()
