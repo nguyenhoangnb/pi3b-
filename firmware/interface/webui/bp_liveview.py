@@ -3,7 +3,7 @@ from flask import Blueprint, Response, send_from_directory
 from pathlib import Path
 import subprocess
 import time
-from .helpers import rec_is_active, cfg_get, get_recorder
+from .helpers import rec_is_active, cfg_get, get_recorder, start_service, check_service
 
 bp = Blueprint("liveview", __name__)
 HLS_DIR = Path("/tmp/picam_hls/")
@@ -84,14 +84,15 @@ def _ensure_recorder_running():
         return False
     
     # If already recording, return immediately
-    if recorder.is_recording:
+    if recorder:
         return True
     
     # Start recording
     print("🚀 Starting recorder for live view...")
     try:
-        result = recorder.start_recording()
-        if not result:
+        start_service("picam-recorder")
+        result = check_service("picam-recorder")
+        if  result != "active":
             print("⚠ Failed to start recorder")
             return False
         
