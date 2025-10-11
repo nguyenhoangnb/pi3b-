@@ -243,26 +243,66 @@ class VideoRecorder:
             return "GPS: No Fix"
         except: return "GPS: Error"
 
-    def _add_overlays(self, frame):
-        if frame is None: return frame
+    
+    def _add_overlays(self, frame, time_text=None):
+        """Add time and GPS overlays to frame"""
+        if frame is None:
+            return frame
+
         frame = frame.copy()
-        h,w = frame.shape[:2]
-        cfg=self.config['overlays']
+        height, width = frame.shape[:2]
+        overlay_config = self.config['overlays']
 
-        if self.enable_time_overlay and cfg.get('timestamp_enabled',True):
-            txt=self._get_time_text()
-            (tw,th),baseline=cv2.getTextSize(txt,cv2.FONT_HERSHEY_SIMPLEX,cfg['font_scale'],cfg['font_thickness'])
-            cv2.rectangle(frame,(10,10),(20+tw,20+th+baseline),cfg['bg_color'],-1)
-            cv2.putText(frame,txt,(15,15+th),cv2.FONT_HERSHEY_SIMPLEX,cfg['font_scale'],cfg['text_color'],cfg['font_thickness'])
+        # Time overlay (top-left)
+        if self.enable_time_overlay and overlay_config.get('timestamp_enabled', True):
+            if time_text is None:
+                time_text = self._get_time_text()
 
-        if self.enable_gps_overlay and cfg.get('gps_enabled',False):
-            txt=self._get_gps_text()
-            (tw,th),baseline=cv2.getTextSize(txt,cv2.FONT_HERSHEY_SIMPLEX,cfg['font_scale'],cfg['font_thickness'])
-            x=w-tw-20
-            cv2.rectangle(frame,(x-5,10),(w-10,20+th+baseline),cfg['bg_color'],-1)
-            cv2.putText(frame,txt,(x,15+th),cv2.FONT_HERSHEY_SIMPLEX,cfg['font_scale'],cfg['text_color'],cfg['font_thickness'])
+            (text_width, text_height), baseline = cv2.getTextSize(
+                time_text,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                overlay_config['font_scale'],
+                overlay_config['font_thickness']
+            )
+
+            cv2.rectangle(frame,
+                        (10, 10),
+                        (20 + text_width, 20 + text_height + baseline),
+                        overlay_config['bg_color'], -1)
+
+            cv2.putText(frame, time_text,
+                        (15, 15 + text_height),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        overlay_config['font_scale'],
+                        overlay_config['text_color'],
+                        overlay_config['font_thickness'])
+
+        # GPS overlay (top-right)
+        if self.enable_gps_overlay and overlay_config.get('gps_enabled', False):
+            gps_text = self._get_gps_text()
+            if gps_text:
+                (text_width, text_height), baseline = cv2.getTextSize(
+                    gps_text,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    overlay_config['font_scale'],
+                    overlay_config['font_thickness']
+                )
+                x_pos = width - text_width - 20
+
+                cv2.rectangle(frame,
+                            (x_pos - 5, 10),
+                            (width - 10, 20 + text_height + baseline),
+                            overlay_config['bg_color'], -1)
+
+                cv2.putText(frame, gps_text,
+                            (x_pos, 15 + text_height),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            overlay_config['font_scale'],
+                            overlay_config['text_color'],
+                            overlay_config['font_thickness'])
 
         return frame
+
 
     # ---------- FFmpeg Recording ----------
     def _create_ffmpeg_recorder_with_audio(self, filename):
@@ -317,35 +357,97 @@ class VideoRecorder:
 
     # ---------- RECORDING LOOP ----------
     def _recording_loop(self):
-        print("🎬 Recording loop started")
-        hls_counter=0
-        self.camera.start()
-        while not self._stop_recording:
-            self._update_led_status()
-            if not self.usb_manager.is_available():
-                print("⚠ USB disconnected, waiting...")
-                if self.current_recorder_process:
-                    try: self.current_recorder_process.stdin.close(); self.current_recorder_process.wait(timeout=2)
-                    except: self.current_recorder_process.kill()
-                    self.current_recorder_process=None
-                self.usb_manager.wait_until_available(); continue
+        """Main recording loop (optimized RTC reading)"""
+        print("🎬 Starting recording loop...")
 
-            if self._should_create_new_segment(): self._create_new_segment()
-            frame=self.camera.read_frame()
-            if frame is None: time.sleep(0.05); continue
+        hls_restart_counter = 0
+        last_rtc_update = 0
+        current_time_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            frame_with_overlay=self._add_overlays(frame)
-            if self.current_recorder_process:
-                try: self.current_recorder_process.stdin.write(frame_with_overlay.tobytes()); self.current_recorder_process.stdin.flush()
-                except (BrokenPipeError,IOError):
-                    print("⚠ FFmpeg pipe broken, creating new segment...")
-                    self.segment_start_time=0
+        try:
+            # Start camera
+            self.camera.start()
 
-            if self.hls_enabled:
-                hls_counter+=1
-                if hls_counter%3==0: self._write_frame_to_hls(frame_with_overlay)
-        print("🎬 Recording loop stopped")
-        self._cleanup_recording()
+            while not self._stop_recording:
+                # Update LED status
+                self._update_led_status()
+
+                # Check USB availability
+                if not self.usb_manager.is_available():
+                    print("⚠ USB disconnected, waiting...")
+                    if self.current_recorder_process:
+                        try:
+                            self.current_recorder_process.stdin.close()
+                            self.current_recorder_process.wait(timeout=2)
+                        except:
+                            self.current_recorder_process.kill()
+                        self.current_recorder_process = None
+                    self.usb_manager.wait_until_available()
+                    continue
+
+                # Check if we need a new segment
+                if self._should_create_new_segment():
+                    if not self._create_new_segment():
+                        print("✗ Failed to create new segment, retrying...")
+                        time.sleep(5)
+                        continue
+
+                # Update time overlay once per second
+                now = time.time()
+                if now - last_rtc_update >= 1:
+                    try:
+                        if self.rtc:
+                            # Optional: dùng lock nếu nhiều thread đọc RTC
+                            dt = self.rtc.read_time()
+                        else:
+                            dt = datetime.now()
+                        current_time_text = dt.strftime("%Y-%m-%d %H:%M:%S")
+                    except OSError as e:
+                        print(f"⚠ RTC busy, fallback to system time: {e}")
+                        current_time_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    last_rtc_update = now
+
+                # Read frame from camera
+                try:
+                    frame = self.camera.read_frame(timeout=1.0)
+                    if frame is None:
+                        continue
+
+                    # Add overlays (use cached time)
+                    frame_with_overlays = self._add_overlays(frame, time_text=current_time_text)
+
+                    # Write to FFmpeg recording
+                    if self.current_recorder_process:
+                        try:
+                            self.current_recorder_process.stdin.write(frame_with_overlays.tobytes())
+                            self.current_recorder_process.stdin.flush()
+                        except BrokenPipeError:
+                            print("⚠ Recording pipe broken, creating new segment...")
+                            self.segment_start_time = 0  # Force new segment
+                        except Exception as e:
+                            print(f"⚠ Recording write error: {e}")
+
+                    # Write to HLS stream (without overlays for better performance)
+                    if self.hls_enabled:
+                        if not self._write_frame_to_hls(frame):
+                            hls_restart_counter += 1
+                            if hls_restart_counter >= 100:
+                                print("⚠ Too many HLS write failures, restarting...")
+                                self._restart_hls_if_needed()
+                                hls_restart_counter = 0
+                        else:
+                            hls_restart_counter = 0
+
+                except Exception as e:
+                    print(f"⚠ Frame processing error: {e}")
+                    time.sleep(0.1)
+                    continue
+
+        except Exception as e:
+            print(f"✗ Recording loop error: {e}")
+
+        finally:
+            self._cleanup_recording()
 
     def start_recording(self):
         if self.is_recording: return
