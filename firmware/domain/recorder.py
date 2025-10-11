@@ -374,15 +374,15 @@ class VideoRecorder:
             # Build FFmpeg command using ffmpeg-python
             stream = (
                 ffmpeg
-                .input('pipe:0', format='rawvideo', pix_fmt='bgr24', s=f'{width}x{height}', r=target_fps)
+                .input('pipe:0', format='rawvideo', pix_fmt='bgr24', s=f'{width}x{height}', r=self.target_fps)
                 .filter('scale', width, height)  # No upscale, keep original size
                 .output(str(hls_playlist),
                     vcodec='libx264',
                     preset='ultrafast',
                     tune='zerolatency',
                     **{'b:v': '800k'},  # Higher bitrate for better quality
-                    g=target_fps,  # GOP size = frame rate
-                    **{'r': target_fps},  # Force constant frame rate
+                    g=self.target_fps,  # GOP size = frame rate
+                    **{'r': self.target_fps},  # Force constant frame rate
                     pix_fmt='yuv420p',
                     f='hls',
                     hls_time=2,
@@ -421,7 +421,7 @@ class VideoRecorder:
                 except:
                     pass
             self.hls_process = None
-    
+            self.target_fps = 30
     def _write_frame_to_hls(self, frame):
         """Write frame to HLS stream"""
         if not self.hls_process:
@@ -561,13 +561,13 @@ class VideoRecorder:
             
             # Camera outputs YUYV 4:2:2 at specific resolutions/framerates
             if width == 640 and height == 480:
-                target_fps = 30
+                self.target_fps = 30
             elif width == 320 and height == 240:
-                target_fps = 15
+                self.target_fps = 15
             else:
                 print(f"⚠ Unsupported resolution {width}x{height}, defaulting to 640x480@30fps")
                 width, height = 640, 480
-                target_fps = 30
+                self.target_fps = 30
 
             camera_stream = (
                 ffmpeg
@@ -575,7 +575,7 @@ class VideoRecorder:
                        format='v4l2',
                        input_format='yuyv422',  # Camera native format
                        video_size=f'{width}x{height}',
-                       framerate=target_fps)
+                       framerate=self.target_fps)
                 .output('pipe:', format='rawvideo', pix_fmt='bgr24')  # Convert to BGR24
                 .global_args('-hide_banner', '-loglevel', 'error')
             )
