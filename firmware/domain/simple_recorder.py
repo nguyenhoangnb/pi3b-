@@ -394,27 +394,13 @@ class VideoRecorder:
     def _create_new_segment(self):
         """Create new video and audio segment"""
             # Check storage space and handle USB events
-            if hasattr(self, 'usb_manager'):
-                # Wait until USB is available
-                while self.is_recording and not self.usb_manager.is_available():
-                    print("⚠ USB disconnected during recording")
-                    self.usb_manager.wait_until_available()
-                    if not self.is_recording:
-                        return False
-                
-                # Log storage status
-                try:
-                    free_space = self.usb_manager.get_free_space()
-                    total_space = self.usb_manager.get_total_space()
-                    free_percent = (free_space / total_space) * 100
-                    print(f"Storage status: {free_space:.1f}GB free of {total_space:.1f}GB ({free_percent:.1f}%)")            # Try to free up space if needed
-            while self.is_recording and not self.usb_manager.has_enough_space():
-                print("⚠ Storage space low, cleaning up...")
-                self.usb_manager.cleanup_old_files()
-                if not self.usb_manager.has_enough_space():
-                    print("❌ Could not free enough space")
-                    self.stop_recording()
-                    return False
+        while self.is_recording and not self.usb_manager.has_enough_space():
+            print("⚠ Storage space low, cleaning up...")
+            self.usb_manager.cleanup_old_files()
+            if not self.usb_manager.has_enough_space():
+                print("❌ Could not free enough space")
+                self.stop_recording()
+                return False
 
         # Close current video writer
         if hasattr(self, 'video_writer'):
