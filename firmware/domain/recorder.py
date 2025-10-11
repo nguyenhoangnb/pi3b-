@@ -589,7 +589,7 @@ class VideoRecorder:
             fps = cam_config.get('fps', 15)
 
             # --- Chọn thư mục lưu ---
-            base_dir = Path("/media/ssd/picam") if Path("/media/ssd/picam").exists() else Path("/home/pi/videos")
+            base_dir = Path("/media/ssd") if Path("/media/ssd").exists() else Path("/home/pi/videos")
             base_dir.mkdir(parents=True, exist_ok=True)
             output_file = base_dir / filename
 
