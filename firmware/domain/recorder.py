@@ -390,6 +390,18 @@ class VideoRecorder:
         if not self.current_recorder_process:
             return False
         
+        # Check if FFmpeg process is still alive
+        if self.current_recorder_process.poll() is not None:
+            # FFmpeg died, read stderr
+            try:
+                stderr = self.current_recorder_process.stderr.read().decode('utf-8', errors='ignore')
+                print(f"✗ FFmpeg died: {stderr}")
+            except:
+                print("✗ FFmpeg died (no stderr)")
+            self.current_recorder_process = None
+            self.segment_start_time = 0  # Force new segment
+            return False
+        
         try:
             # Write frame bytes to FFmpeg stdin
             self.current_recorder_process.stdin.write(frame.tobytes())
@@ -416,6 +428,17 @@ class VideoRecorder:
             print(f"✗ Failed to start camera: {e}")
             return
         
+        # Test camera by reading a frame
+        print("📸 Testing camera...")
+        test_frame = self.camera.read_frame()
+        if test_frame is None:
+            print("✗ Camera test failed - no frames available!")
+            return
+        print(f"✓ Camera test OK - frame shape: {test_frame.shape}")
+        
+        frame_count = 0
+        last_report = time.time()
+        
         while not self._stop_recording:
             # Create new segment if needed
             if self._should_create_new_segment():
@@ -434,7 +457,15 @@ class VideoRecorder:
             frame_with_overlay = self._add_overlays(frame)
             
             # Write to FFmpeg
-            self._write_frame_to_ffmpeg(frame_with_overlay)
+            if self._write_frame_to_ffmpeg(frame_with_overlay):
+                frame_count += 1
+            
+            # Report progress every 5 seconds
+            if time.time() - last_report >= 5.0:
+                fps = frame_count / 5.0
+                print(f"📊 Recording: {frame_count} frames in 5s ({fps:.1f} fps)")
+                frame_count = 0
+                last_report = time.time()
 
             # Don't sleep - read as fast as camera provides frames
 
@@ -503,6 +534,8 @@ class VideoRecorder:
             audio_rate = self.config['audio'].get('sample_rate', 48000)
             audio_ch = self.config['audio'].get('channels', 1)
             cmd.extend([
+                "-thread_queue_size", "512",  # Prevent blocking on audio input
+                "-use_wallclock_as_timestamps", "1",  # Use system time instead of waiting for audio sync
                 "-f", "alsa",
                 "-ac", str(audio_ch),
                 "-ar", str(audio_rate),
