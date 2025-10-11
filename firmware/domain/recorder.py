@@ -90,92 +90,174 @@ class VideoRecorder:
 
     # ---------------- CONFIG ----------------
     def _load_config(self, config_file=None):
+        """Load configuration from YAML file or use defaults"""
+        # Determine config file path
         if config_file is None:
             config_file = Path(__file__).parent.parent / 'config' / 'device_full.yaml'
+        else:
+            config_file = Path(config_file)
+        
+        # Try to load YAML config
         if config_file.exists():
             try:
                 yaml_config = load(config_file)
                 print(f"✓ Loaded config from: {config_file}")
-                return self._convert_yaml_to_recorder_config(yaml_config)
+                return self._parse_yaml_config(yaml_config)
             except Exception as e:
                 print(f"⚠ Error loading config: {e}")
-                return self._default_config()
+                print("⚠ Falling back to default config")
+                return self._get_default_config()
         else:
-            print("⚠ No config file found, using defaults")
-            return self._default_config()
+            print(f"⚠ Config file not found: {config_file}")
+            print("⚠ Using default config")
+            return self._get_default_config()
 
-    def _convert_yaml_to_recorder_config(self, yaml_config):
-        video_config = yaml_config.get('video', {})
-        v4l2_format = video_config.get('v4l2_format', '640x480')
-        width, height = map(int, v4l2_format.split('x'))
-
-        storage_config = yaml_config.get('storage', {})
-        paths_config = yaml_config.get('paths', {})
-        gpio_config = yaml_config.get('gpio', {})
-
+    def _parse_yaml_config(self, yaml_config):
+        """Parse YAML config and convert to recorder internal format"""
+        # Extract sections
+        video = yaml_config.get('video', {})
+        audio = yaml_config.get('audio', {})
+        storage = yaml_config.get('storage', {})
+        paths = yaml_config.get('paths', {})
+        gpio = yaml_config.get('gpio', {})
+        caps = yaml_config.get('capabilities', {})
+        device_info = yaml_config.get('device', {})
+        
+        # Parse video format
+        v4l2_format = video.get('v4l2_format', '640x480')
+        try:
+            width, height = map(int, v4l2_format.split('x'))
+        except ValueError:
+            print(f"⚠ Invalid v4l2_format '{v4l2_format}', using 640x480")
+            width, height = 640, 480
+        
+        # Build internal config
         config = {
             'camera': {
-                'device': video_config.get('v4l2_device', '/dev/video0'),
+                'device': video.get('v4l2_device', '/dev/video0'),
                 'width': width,
                 'height': height,
-                'fps': video_config.get('v4l2_fps', 25)
+                'fps': video.get('v4l2_fps', 30)
             },
             'audio': {
-                'enabled': yaml_config.get('capabilities', {}).get('audio', True),
-                'device': yaml_config.get('audio', {}).get('device', None),
-                'sample_rate': yaml_config.get('audio', {}).get('sample_rate', 48000),
-                'channels': yaml_config.get('audio', {}).get('channels', 1)
+                'enabled': caps.get('audio', False),
+                'device': audio.get('device'),  # None = auto-detect
+                'sample_rate': audio.get('sample_rate', 48000),
+                'channels': audio.get('channels', 1)
             },
-            'usb': {
-                'path': paths_config.get('record_root', '/media/ssd'),
-                'min_free_gb': storage_config.get('min_free_gb', 1.0),
-                'min_free_percent': 10
+            'storage': {
+                'path': paths.get('record_root', '/media/ssd'),
+                'min_free_gb': storage.get('min_free_gb', 1.0),
+                'segment_seconds': storage.get('segment_seconds', 600),
+                'container': storage.get('container', 'mp4')
             },
-            'recording': {
-                'segment_duration': storage_config.get('segment_seconds', 600),
-                'format': 'XVID' if storage_config.get('container') == 'mkv' else 'mp4v',
-                'quality': 80
+            'gpio': {
+                'record_led': gpio.get('record_led', 26),
+                'wifi_led': gpio.get('wifi_led', 13),
+                'lte_led': gpio.get('lte_led', 6)
             },
-            'leds': {
-                'record_led_pin': gpio_config.get('record_led', 26)
-            },
-            'overlays': {
+            'overlay': {
+                'timestamp_enabled': True,
+                'gps_enabled': caps.get('gnss', False),
                 'font_scale': 0.7,
                 'font_thickness': 2,
                 'text_color': (255, 255, 255),
-                'bg_color': (0, 0, 0),
-                'timestamp_enabled': True,
-                'gps_enabled': yaml_config.get('capabilities', {}).get('gnss', False)
+                'bg_color': (0, 0, 0)
             },
-            'capabilities': yaml_config.get('capabilities', {}),
-            'device': yaml_config.get('device', {})
+            'capabilities': {
+                'video': caps.get('video', True),
+                'audio': caps.get('audio', False),
+                'gnss': caps.get('gnss', False),
+                'lte': caps.get('lte', False)
+            },
+            'device': {
+                'id': device_info.get('id', 'PICAM-UNKNOWN'),
+                'model': device_info.get('model', 'PiCam'),
+                'hw_rev': device_info.get('hw_rev', 'A0'),
+                'fw_version': device_info.get('fw_version', '0.0.0')
+            }
         }
+        
+        print(f"✓ Camera: {config['camera']['device']} @ {width}x{height} {config['camera']['fps']}fps")
+        print(f"✓ Audio: {'enabled' if config['audio']['enabled'] else 'disabled'}")
+        print(f"✓ Storage: {config['storage']['path']} (min {config['storage']['min_free_gb']}GB)")
+        print(f"✓ Segment: {config['storage']['segment_seconds']}s per file")
+        
         return config
 
-    def _default_config(self):
+    def _get_default_config(self):
+        """Get default configuration when YAML file is not available"""
         return {
-            'camera': {'device': '/dev/video0','width': 640,'height': 480,'fps': 30},
-            'audio': {'enabled': True,'device': None,'sample_rate': 48000,'channels': 1},
-            'usb': {'path': '/media/ssd','min_free_gb': 1.0,'min_free_percent': 10},
-            'recording': {'segment_duration': 600,'format': 'mp4','quality': 80},
-            'leds': {'record_led_pin': 26},
-            'overlays': {'font_scale': 0.7,'font_thickness': 2,'text_color': (255,255,255),'bg_color': (0,0,0),'timestamp_enabled': True,'gps_enabled': False},
-            'capabilities': {'video': True,'audio': False,'gnss': False,'lte': False},
-            'device': {'id': 'PICAM-DEFAULT','model': 'PiCam'}
+            'camera': {
+                'device': '/dev/video0',
+                'width': 640,
+                'height': 480,
+                'fps': 30
+            },
+            'audio': {
+                'enabled': False,
+                'device': None,
+                'sample_rate': 48000,
+                'channels': 1
+            },
+            'storage': {
+                'path': '/media/ssd',
+                'min_free_gb': 1.0,
+                'segment_seconds': 600,
+                'container': 'mp4'
+            },
+            'gpio': {
+                'record_led': 26,
+                'wifi_led': 13,
+                'lte_led': 6
+            },
+            'overlay': {
+                'timestamp_enabled': True,
+                'gps_enabled': False,
+                'font_scale': 0.7,
+                'font_thickness': 2,
+                'text_color': (255, 255, 255),
+                'bg_color': (0, 0, 0)
+            },
+            'capabilities': {
+                'video': True,
+                'audio': False,
+                'gnss': False,
+                'lte': False
+            },
+            'device': {
+                'id': 'PICAM-DEFAULT',
+                'model': 'PiCam',
+                'hw_rev': 'A0',
+                'fw_version': '0.0.0'
+            }
         }
 
     # ---------------- COMPONENTS ----------------
     def _initialize_components(self):
         try:
-            cam_config = self.config['camera']
-            self.camera = FFmpegCamera(device=cam_config['device'], width=cam_config['width'], height=cam_config['height'], fps=cam_config['fps'])
+            # Camera
+            cam = self.config['camera']
+            self.camera = FFmpegCamera(
+                device=cam['device'],
+                width=cam['width'],
+                height=cam['height'],
+                fps=cam['fps']
+            )
             print("✓ Camera initialized")
 
-            usb_config = self.config['usb']
-            self.usb_manager = USBManager(path=usb_config['path'], min_free_gb=usb_config['min_free_gb'], min_free_percent=usb_config['min_free_percent'])
+            # Storage manager
+            storage = self.config['storage']
+            self.usb_manager = USBManager(
+                path=storage['path'],
+                min_free_gb=storage['min_free_gb'],
+                min_free_percent=10  # Fixed at 10%
+            )
             print("✓ USB Manager initialized")
-            self.segment_duration = self.config['storage']['segment_seconds']
-            self.record_led = gpioLed(self.config['leds']['record_led_pin'])
+            self.segment_duration = storage['segment_seconds']
+            
+            # LED
+            self.record_led = gpioLed(self.config['gpio']['record_led'])
             print("✓ Record LED initialized")
 
             if self.config.get('audio', {}).get('enabled', True):
@@ -253,7 +335,7 @@ class VideoRecorder:
             return frame
         frame = frame.copy()
         height, width = frame.shape[:2]
-        cfg = self.config['overlays']
+        cfg = self.config['overlay']
 
         # Time overlay
         if self.enable_time_overlay and cfg.get('timestamp_enabled', True):
@@ -261,7 +343,7 @@ class VideoRecorder:
             cv2.putText(frame, time_text, (10, height - 10), cv2.FONT_HERSHEY_SIMPLEX, cfg['font_scale'], cfg['text_color'], cfg['font_thickness'], cv2.LINE_AA)
 
         # GPS overlay
-        if self.enable_gps_overlay:
+        if self.enable_gps_overlay and cfg.get('gps_enabled', False):
             gps_text = self._get_gps_text()
             cv2.putText(frame, gps_text, (10, height - 30), cv2.FONT_HERSHEY_SIMPLEX, cfg['font_scale'], cfg['text_color'], cfg['font_thickness'], cv2.LINE_AA)
 
@@ -331,7 +413,7 @@ class VideoRecorder:
 
         # Tạo file mới
         now = datetime.now().strftime("%Y%m%d-%H%M%S")
-        base_dir = Path(self.config['usb']['path'])
+        base_dir = Path(self.config['storage']['path'])
         base_dir.mkdir(parents=True, exist_ok=True)
         output_file = base_dir / f"{now}.mp4"
 
