@@ -1,9 +1,7 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# VideoRecorder.py
+# Optimized Audio + Video recorder for Raspberry Pi 3B+
 
-from __future__ import print_function, division
-import numpy as np
 import cv2
 import pyaudio
 import wave
@@ -12,182 +10,125 @@ import time
 import subprocess
 import os
 
-class VideoRecorder():
-    "Video class based on openCV"
-    def __init__(self, name="temp_video.avi", fourcc="MJPG", sizex=640, sizey=480, camindex=0, fps=30):
+class VideoRecorder:
+    """Video recording optimized for Raspberry Pi"""
+    def __init__(self, filename="temp_video.avi", width=640, height=480, fps=15, device_index=0):
         self.open = True
-        self.device_index = camindex
-        self.fps = fps                  # fps should be the minimum constant rate at which the camera can
-        self.fourcc = fourcc            # capture images (with no decrease in speed over time; testing is required)
-        self.frameSize = (sizex, sizey) # video formats and sizes also depend and vary according to the camera used
-        self.video_filename = name
-        self.video_cap = cv2.VideoCapture(self.device_index)
-        self.video_writer = cv2.VideoWriter_fourcc(*self.fourcc)
-        self.video_out = cv2.VideoWriter(self.video_filename, self.video_writer, self.fps, self.frameSize)
-        self.frame_counts = 1
-        self.start_time = time.time()
+        self.device_index = device_index
+        self.filename = filename
+        self.fps = fps
+        self.frame_size = (width, height)
+        self.frame_count = 0
+        self.start_time = None
+
+        # Camera setup
+        self.cap = cv2.VideoCapture(self.device_index)
+        self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.cap.set(cv2.CAP_PROP_FPS, fps)
+
+        # Output setup
+        fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+        self.out = cv2.VideoWriter(self.filename, fourcc, fps, self.frame_size)
 
     def record(self):
-        "Video starts being recorded"
-        # counter = 1
-        timer_start = time.time()
-        timer_current = 0
+        self.start_time = time.time()
         while self.open:
-            ret, video_frame = self.video_cap.read()
+            ret, frame = self.cap.read()
             if ret:
-                self.video_out.write(video_frame)
-                # print(str(counter) + " " + str(self.frame_counts) + " frames written " + str(timer_current))
-                self.frame_counts += 1
-                # counter += 1
-                # timer_current = time.time() - timer_start
-                time.sleep(1/self.fps)
-                # gray = cv2.cvtColor(video_frame, cv2.COLOR_BGR2GRAY)
-                # cv2.imshow('video_frame', gray)
-                # cv2.waitKey(1)
+                self.out.write(frame)
+                self.frame_count += 1
             else:
+                print("⚠️ Frame capture failed")
                 break
+            time.sleep(1 / self.fps)
 
     def stop(self):
-        "Finishes the video recording therefore the thread too"
-        if self.open:
-            self.open=False
-            self.video_out.release()
-            self.video_cap.release()
-            cv2.destroyAllWindows()
+        self.open = False
+        self.out.release()
+        self.cap.release()
+        cv2.destroyAllWindows()
 
     def start(self):
-        "Launches the video recording function using a thread"
-        video_thread = threading.Thread(target=self.record)
-        video_thread.start()
+        threading.Thread(target=self.record, daemon=True).start()
 
-class AudioRecorder():
-    "Audio class based on pyAudio and Wave"
-    def __init__(self, filename="temp_audio.wav", rate=44100, fpb=2**12, channels=1, audio_index=0):
+
+class AudioRecorder:
+    """Audio recording"""
+    def __init__(self, filename="temp_audio.wav", rate=16000, channels=1, device_index=None):
         self.open = True
+        self.filename = filename
         self.rate = rate
-        self.frames_per_buffer = fpb
         self.channels = channels
-        self.format = pyaudio.paInt16
-        self.audio_filename = filename
+        self.frames = []
         self.audio = pyaudio.PyAudio()
-        self.stream = self.audio.open(format=self.format,
+
+        self.stream = self.audio.open(format=pyaudio.paInt16,
                                       channels=self.channels,
                                       rate=self.rate,
                                       input=True,
-                                      input_device_index=audio_index,
-                                      frames_per_buffer = self.frames_per_buffer)
-        self.audio_frames = []
+                                      input_device_index=device_index,
+                                      frames_per_buffer=1024)
 
     def record(self):
-        "Audio starts being recorded"
-        self.stream.start_stream()
-        t_start = time.time_ns()
         while self.open:
-            try:
-                data = self.stream.read(self.frames_per_buffer)
-                self.audio_frames.append(data)
-            except Exception as e:
-                print('\n' + '*'*80)
-                print('PyAudio read exception at %.1fms\n' % ((time.time_ns() - t_start)/10**6))
-                print(e)
-                print('*'*80 + '\n')
-            time.sleep(0.01)
+            data = self.stream.read(1024, exception_on_overflow=False)
+            self.frames.append(data)
+
+    def stop(self):
+        self.open = False
         self.stream.stop_stream()
         self.stream.close()
         self.audio.terminate()
-        waveFile = wave.open(self.audio_filename, 'wb')
-        waveFile.setnchannels(self.channels)
-        waveFile.setsampwidth(self.audio.get_sample_size(self.format))
-        waveFile.setframerate(self.rate)
-        waveFile.writeframes(b''.join(self.audio_frames))
-        waveFile.close()
 
-    def stop(self):
-        "Finishes the audio recording therefore the thread too"
-        if self.open:
-            self.open = False
+        wf = wave.open(self.filename, 'wb')
+        wf.setnchannels(self.channels)
+        wf.setsampwidth(self.audio.get_sample_size(pyaudio.paInt16))
+        wf.setframerate(self.rate)
+        wf.writeframes(b''.join(self.frames))
+        wf.close()
 
     def start(self):
-        "Launches the audio recording function using a thread"
-        audio_thread = threading.Thread(target=self.record)
-        audio_thread.start()
+        threading.Thread(target=self.record, daemon=True).start()
 
-def start_AVrecording(filename="test", audio_index=0, sample_rate=44100):
-    global video_thread
-    global audio_thread
-    video_thread = VideoRecorder()
-    audio_thread = AudioRecorder(audio_index=audio_index, rate=sample_rate)
-    audio_thread.start()
-    video_thread.start()
-    return filename
 
-def start_video_recording(filename="test"):
-    global video_thread
-    video_thread = VideoRecorder()
-    video_thread.start()
-    return filename
+def merge_av(video_file, audio_file, output_file="output.mp4"):
+    """Merge audio + video with FFmpeg"""
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_file,
+        "-i", audio_file,
+        "-c:v", "copy", "-c:a", "aac", "-strict", "experimental",
+        "-shortest", output_file
+    ]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-def start_audio_recording(filename="test", audio_index=0, sample_rate=44100):
-    global audio_thread
-    audio_thread = AudioRecorder(audio_index=audio_index, rate=sample_rate)
-    audio_thread.start()
-    return filename
 
-def stop_AVrecording(filename="test"):
-    audio_thread.stop()
-    frame_counts = video_thread.frame_counts
-    elapsed_time = time.time() - video_thread.start_time
-    recorded_fps = frame_counts / elapsed_time
-    print("total frames " + str(frame_counts))
-    print("elapsed time " + str(elapsed_time))
-    print("recorded fps " + str(recorded_fps))
-    video_thread.stop()
+def clean_temp():
+    for f in ["temp_video.avi", "temp_audio.wav"]:
+        if os.path.exists(f):
+            os.remove(f)
 
-    # Makes sure the threads have finished
-    while threading.active_count() > 1:
-        time.sleep(1)
 
-    # Merging audio and video signal
-    if abs(recorded_fps - 6) >= 0.01:    # If the fps rate was higher/lower than expected, re-encode it to the expected
-        print("Re-encoding")
-        cmd = "ffmpeg -r " + str(recorded_fps) + " -i temp_video.avi -pix_fmt yuv420p -r 6 temp_video2.avi"
-        subprocess.call(cmd, shell=True)
-        print("Muxing")
-        cmd = "ffmpeg -y -ac 2 -channel_layout stereo -i temp_audio.wav -i temp_video2.avi -pix_fmt yuv420p " + filename + ".avi"
-        subprocess.call(cmd, shell=True)
-    else:
-        print("Normal recording\nMuxing")
-        cmd = "ffmpeg -y -ac 2 -channel_layout stereo -i temp_audio.wav -i temp_video.avi -pix_fmt yuv420p " + filename + ".avi"
-        subprocess.call(cmd, shell=True)
-        print("..")
+if __name__ == "__main__":
+    print("🎥 Starting recording on Pi 3B+ ...")
 
-def file_manager(filename="test"):
-    "Required and wanted processing of final files"
-    local_path = os.getcwd()
-    if os.path.exists(str(local_path) + "/temp_audio.wav"):
-        os.remove(str(local_path) + "/temp_audio.wav")
-    if os.path.exists(str(local_path) + "/temp_video.avi"):
-        os.remove(str(local_path) + "/temp_video.avi")
-    if os.path.exists(str(local_path) + "/temp_video2.avi"):
-        os.remove(str(local_path) + "/temp_video2.avi")
-    # if os.path.exists(str(local_path) + "/" + filename + ".avi"):
-    #     os.remove(str(local_path) + "/" + filename + ".avi")
+    video = VideoRecorder(fps=15)
+    audio = AudioRecorder()
 
-def list_audio_devices(name_filter=None):
-    pa = pyaudio.PyAudio()
-    device_index = None
-    sample_rate = None
-    for x in range(pa.get_device_count()):
-        info = pa.get_device_info_by_index(x)
-        print(pa.get_device_info_by_index(x))
-        if name_filter is not None and name_filter in info['name']:
-            device_index = info['index']
-            sample_rate = int(info['defaultSampleRate'])
-            break
-    return device_index, sample_rate
+    video.start()
+    audio.start()
 
-if __name__ == '__main__':
-    start_AVrecording()
-    time.sleep(5)
-    stop_AVrecording()
-    file_manager()
+    record_seconds = 10
+    time.sleep(record_seconds)
+
+    print("🛑 Stopping recording...")
+    video.stop()
+    audio.stop()
+
+    print("🎬 Merging...")
+    merge_av("temp_video.avi", "temp_audio.wav", "final_output.mp4")
+
+    clean_temp()
+    print("✅ Done! Saved as final_output.mp4")
