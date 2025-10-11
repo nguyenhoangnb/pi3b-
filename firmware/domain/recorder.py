@@ -359,65 +359,106 @@ class VideoRecorder:
             print(f"🎬 HLS streaming directory: {self.hls_dir}")
     
     def _write_frame_to_ffmpeg(self, frame):
-        if self.current_recorder_process:
-            try:
-                self.current_recorder_process.stdin.write(frame.tobytes())
-            except BrokenPipeError:
-                print("⚠ FFmpeg pipe broken, will start new segment")
-                self.segment_start_time = 0
+        """Write frame to FFmpeg stdin pipe"""
+        if not self.current_recorder_process:
+            return False
+        
+        try:
+            # Write frame bytes to FFmpeg stdin
+            self.current_recorder_process.stdin.write(frame.tobytes())
+            self.current_recorder_process.stdin.flush()
+            return True
+        except BrokenPipeError:
+            print("⚠ FFmpeg pipe broken, will create new segment")
+            self.segment_start_time = 0  # Force new segment
+            self.current_recorder_process = None
+            return False
+        except Exception as e:
+            print(f"⚠ Error writing frame to FFmpeg: {e}")
+            return False
 
     # ---------------- RECORDING LOOP ----------------
     def _recording_loop(self):
         print("🎥 Recording thread started")
+        
+        # Start camera FIRST before creating segment
+        try:
+            self.camera.start()
+            print("✓ Camera started in recording loop")
+        except Exception as e:
+            print(f"✗ Failed to start camera: {e}")
+            return
+        
         while not self._stop_recording:
+            # Create new segment if needed
             if self._should_create_new_segment():
-                self._create_new_segment()
+                if not self._create_new_segment():
+                    print("✗ Failed to create segment, retrying in 5s...")
+                    time.sleep(5)
+                    continue
 
+            # Read frame from camera
             frame = self.camera.read_frame()
             if frame is None:
                 time.sleep(0.01)
                 continue
 
+            # Add overlays
             frame_with_overlay = self._add_overlays(frame)
+            
+            # Write to FFmpeg
             self._write_frame_to_ffmpeg(frame_with_overlay)
 
-            time.sleep(0.04)  # ~25fps
+            # Don't sleep - read as fast as camera provides frames
 
         # Cleanup FFmpeg when stopping
         if self.current_recorder_process:
             try:
                 self.current_recorder_process.stdin.close()
                 self.current_recorder_process.wait(timeout=2)
+                print("✓ FFmpeg process closed")
             except:
                 self.current_recorder_process.kill()
             self.current_recorder_process = None
+        
+        # Stop camera
+        try:
+            self.camera.stop()
+            print("✓ Camera stopped")
+        except:
+            pass
 
     def _create_new_segment(self):
+        """Create new recording segment with FFmpeg"""
         # Đảm bảo USB sẵn sàng
         if not self.usb_manager.is_available():
+            print("⚠ USB not available, waiting...")
             self.usb_manager.wait_until_available()
 
-        # Kiểm tra dung lượng còn đủ, nếu không đủ xóa file cũ
-        while not self.usb_manager.has_enough_space():
-            print("⚠ Không đủ dung lượng, chờ hoặc xóa file cũ...")
-            time.sleep(1)
+        # Kiểm tra dung lượng
+        if not self.usb_manager.has_enough_space():
+            print("⚠ Not enough space, cleaning up old files...")
+            # TODO: Implement cleanup old files
+            return False
 
         # Close previous FFmpeg process
         if self.current_recorder_process:
             try:
+                print("⏹ Closing previous segment...")
                 self.current_recorder_process.stdin.close()
                 self.current_recorder_process.wait(timeout=2)
-            except:
+            except Exception as e:
+                print(f"⚠ Error closing previous segment: {e}")
                 self.current_recorder_process.kill()
             self.current_recorder_process = None
 
-        # Tạo file mới
+        # Create output file path
         now = datetime.now().strftime("%Y%m%d-%H%M%S")
         base_dir = Path(self.config['storage']['path'])
         base_dir.mkdir(parents=True, exist_ok=True)
         output_file = base_dir / f"{now}.mp4"
 
-        # FFmpeg command
+        # Build FFmpeg command
         width, height, fps = self.config['camera']['width'], self.config['camera']['height'], self.config['camera']['fps']
         cmd = [
             "ffmpeg",
@@ -426,10 +467,10 @@ class VideoRecorder:
             "-pix_fmt", "bgr24",
             "-s", f"{width}x{height}",
             "-r", str(fps),
-            "-i", "pipe:0"
+            "-i", "pipe:0"  # Read video from stdin
         ]
 
-        # Audio
+        # Add audio if available
         if self.micro and self.enable_audio:
             audio_device = self.config['audio'].get('device') or "plughw:1,0"
             audio_rate = self.config['audio'].get('sample_rate', 48000)
@@ -441,20 +482,48 @@ class VideoRecorder:
                 "-i", audio_device,
                 "-c:a", "aac",
                 "-b:a", "128k",
-                "-map", "0:v:0",
-                "-map", "1:a:0"
+                "-map", "0:v:0",  # Map video from pipe
+                "-map", "1:a:0"   # Map audio from ALSA
             ])
+            print(f"✓ Audio enabled: {audio_device}")
         else:
-            cmd.append("-an")
+            cmd.append("-an")  # No audio
+            print("ℹ Audio disabled")
 
-        cmd.extend(["-c:v", "h264_v4l2m2m", "-b:v", "2M", "-pix_fmt", "yuv420p", str(output_file)])
+        # Video encoding
+        cmd.extend([
+            "-c:v", "h264_v4l2m2m",  # Hardware encoder
+            "-b:v", "2M",
+            "-pix_fmt", "yuv420p",
+            str(output_file)
+        ])
 
-        # Start FFmpeg
-        self.current_recorder_process = subprocess.Popen(
-            cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, bufsize=10**7
-        )
-        self.segment_start_time = time.time()
-        print(f"🎬 New segment started: {output_file}")
+        # Start FFmpeg process
+        print(f"🎬 Starting FFmpeg: {' '.join(cmd)}")
+        try:
+            self.current_recorder_process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                bufsize=10**7
+            )
+            
+            # Check if FFmpeg started successfully
+            time.sleep(0.2)
+            if self.current_recorder_process.poll() is not None:
+                stderr = self.current_recorder_process.stderr.read().decode('utf-8', errors='ignore')
+                print(f"✗ FFmpeg died immediately: {stderr}")
+                self.current_recorder_process = None
+                return False
+            
+            self.segment_start_time = time.time()
+            print(f"✅ New segment started: {output_file}")
+            return True
+            
+        except Exception as e:
+            print(f"✗ Failed to start FFmpeg: {e}")
+            return False
 
     # ---------------- RECORDING CONTROL ----------------
     def start_recording(self):
