@@ -12,46 +12,72 @@ HLS_DIR.mkdir(parents=True, exist_ok=True)
 
 def _mjpeg_from_hls():
     """Convert HLS stream to MJPEG"""
-    try:
-        process = (
-            ffmpeg
-            .input(str(HLS_DIR / "live.m3u8"), 
-                re=None,
-                fflags='nobuffer',  # Disable input buffering
-                flags='low_delay'   # Enable low delay flags
-            )
-            .output('pipe:', 
-                format='mpjpeg',
-                **{
-                    'q:v': 5,               # Slightly better quality
-                    'pix_fmt': 'yuvj422p',
-                    'boundary_tag': 'frame',
-                    'vsync': '0',           # Disable frame dropping
-                    'max_delay': '500000',  # 0.5s max delay
-                    'thread_queue_size': '512'  # Larger queue for better throughput
-                })
-            .global_args('-hide_banner', '-loglevel', 'error')
-            .run_async(pipe_stdout=True, pipe_stderr=True)
-        )
-        
-        import select
-        
-        while True:
-            # Wait for data with timeout
-            if select.select([process.stdout], [], [], 0.5)[0]:  # 0.5s timeout
-                chunk = process.stdout.read(8192)  # Larger buffer size
-                if not chunk:
-                    break
-                yield chunk
-            else:
-                # No data available, yield empty chunk to keep connection alive
-                yield b''
-    finally:
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
         try:
-            process.kill()
-            process.wait()
-        except:
-            pass
+            process = (
+                ffmpeg
+                .input(str(HLS_DIR / "live.m3u8"), 
+                    re=None,
+                    fflags='nobuffer+discardcorrupt',  # Discard corrupt packets
+                    flags='low_delay',   # Enable low delay flags
+                    analyzeduration='500000',  # Reduce analyze time
+                    probesize='500000'   # Reduce probe size
+                )
+                .output('pipe:', 
+                    format='mpjpeg',
+                    **{
+                        'q:v': 5,               # Slightly better quality
+                        'pix_fmt': 'yuvj422p',
+                        'boundary_tag': 'frame',
+                        'vsync': '0',           # Disable frame dropping
+                        'max_delay': '500000',  # 0.5s max delay
+                        'thread_queue_size': '512',  # Larger queue
+                        'max_muxing_queue_size': '1024'  # Prevent muxing queue overflow
+                    })
+                .global_args('-hide_banner', '-loglevel', 'error', '-xerror')  # Exit on error
+                .run_async(pipe_stdout=True, pipe_stderr=True)
+            )
+            
+            import select
+            no_data_count = 0
+            
+            while True:
+                # Wait for data with shorter timeout
+                if select.select([process.stdout], [], [], 0.2)[0]:  # 0.2s timeout
+                    chunk = process.stdout.read(8192)  # Larger buffer size
+                    if not chunk:
+                        print("⚠ Empty chunk received, stream may have ended")
+                        break
+                    no_data_count = 0  # Reset counter on successful read
+                    yield chunk
+                else:
+                    no_data_count += 1
+                    if no_data_count > 25:  # About 5 seconds without data
+                        print("⚠ No data received for 5s, restarting stream")
+                        break
+                    continue  # Keep trying instead of yielding empty data
+                    
+            # If we get here, the stream has ended or timed out
+            print("⚠ Stream ended, attempting restart")
+            raise Exception("Stream ended")
+        except Exception as e:
+            print(f"⚠ Stream error: {e}")
+            retry_count += 1
+            if retry_count < max_retries:
+                print(f"🔄 Retrying stream ({retry_count}/{max_retries})...")
+                time.sleep(1)  # Wait before retry
+            continue
+        finally:
+            try:
+                process.kill()
+                process.wait(timeout=1)
+            except:
+                pass
+    
+    print("❌ Max retries reached, stream ended")
 
 
 def _ensure_recorder_running():
