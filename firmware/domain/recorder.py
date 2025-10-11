@@ -381,9 +381,93 @@ class VideoRecorder:
         return (time.time() - self.segment_start_time) >= self.segment_duration
     # ---------------- HLS STREAM ----------------
     def _setup_hls_streaming(self):
+        """Setup HLS streaming directory"""
         self.hls_dir.mkdir(parents=True, exist_ok=True)
         if self.hls_enabled:
             print(f"🎬 HLS streaming directory: {self.hls_dir}")
+    
+    def _start_hls_stream(self):
+        """Start HLS streaming process"""
+        if not self.hls_enabled or self.hls_process:
+            return False
+        
+        try:
+            # Clean up old HLS files
+            for f in self.hls_dir.glob("*.ts"):
+                f.unlink()
+            for f in self.hls_dir.glob("*.m3u8"):
+                f.unlink()
+            
+            # HLS output path
+            hls_playlist = self.hls_dir / "live.m3u8"
+            
+            # FFmpeg command for HLS streaming
+            width, height, fps = self.config['camera']['width'], self.config['camera']['height'], self.config['camera']['fps']
+            cmd = [
+                "ffmpeg",
+                "-f", "rawvideo",
+                "-pix_fmt", "bgr24",
+                "-s", f"{width}x{height}",
+                "-r", str(fps),
+                "-i", "pipe:0",  # Read from stdin
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-tune", "zerolatency",
+                "-b:v", "500k",  # Lower bitrate for streaming
+                "-g", str(fps * 2),  # Keyframe every 2 seconds
+                "-f", "hls",
+                "-hls_time", "2",  # 2 second segments
+                "-hls_list_size", "5",  # Keep 5 segments in playlist
+                "-hls_flags", "delete_segments",  # Auto-delete old segments
+                "-hls_segment_filename", str(self.hls_dir / "segment_%03d.ts"),
+                str(hls_playlist)
+            ]
+            
+            print(f"🌐 Starting HLS stream: {hls_playlist}")
+            self.hls_process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                bufsize=10**6
+            )
+            print("✓ HLS stream started")
+            return True
+            
+        except Exception as e:
+            print(f"✗ Failed to start HLS stream: {e}")
+            self.hls_process = None
+            return False
+    
+    def _stop_hls_stream(self):
+        """Stop HLS streaming process"""
+        if self.hls_process:
+            try:
+                self.hls_process.stdin.close()
+                self.hls_process.terminate()
+                self.hls_process.wait(timeout=2)
+                print("✓ HLS stream stopped")
+            except:
+                self.hls_process.kill()
+            self.hls_process = None
+    
+    def _write_frame_to_hls(self, frame):
+        """Write frame to HLS stream"""
+        if not self.hls_process:
+            return False
+        
+        # Check if HLS process is still alive
+        if self.hls_process.poll() is not None:
+            self.hls_process = None
+            return False
+        
+        try:
+            self.hls_process.stdin.write(frame.tobytes())
+            self.hls_process.stdin.flush()
+            return True
+        except (BrokenPipeError, OSError):
+            self.hls_process = None
+            return False
     
     def _write_frame_to_ffmpeg(self, frame):
         """Write frame to FFmpeg stdin pipe"""
@@ -436,6 +520,10 @@ class VideoRecorder:
             return
         print(f"✓ Camera test OK - frame shape: {test_frame.shape}")
         
+        # Start HLS stream
+        if self.hls_enabled:
+            self._start_hls_stream()
+        
         frame_count = 0
         last_report = time.time()
         
@@ -456,9 +544,13 @@ class VideoRecorder:
             # Add overlays
             frame_with_overlay = self._add_overlays(frame)
             
-            # Write to FFmpeg
+            # Write to recording FFmpeg
             if self._write_frame_to_ffmpeg(frame_with_overlay):
                 frame_count += 1
+            
+            # Write to HLS stream (if enabled)
+            if self.hls_enabled:
+                self._write_frame_to_hls(frame_with_overlay)
             
             # Report progress every 5 seconds
             if time.time() - last_report >= 5.0:
@@ -469,6 +561,10 @@ class VideoRecorder:
 
             # Don't sleep - read as fast as camera provides frames
 
+        # Cleanup HLS stream
+        if self.hls_enabled:
+            self._stop_hls_stream()
+        
         # Cleanup FFmpeg when stopping
         if self.current_recorder_process:
             try:
