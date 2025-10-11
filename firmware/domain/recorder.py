@@ -220,8 +220,20 @@ class VideoRecorder:
 
     # ---------- OVERLAY ----------
     def _get_time_text(self):
-        dt = self.rtc.read_time() if self.rtc else datetime.now()
-        return dt.strftime("%Y-%m-%d %H:%M:%S")
+        """Get current time text for overlay"""
+        try:
+            if self.rtc:
+                try:
+                    dt = self.rtc.read_time()
+                except OSError as e:
+                    print(f"⚠ RTC busy, fallback to system time: {e}")
+                    dt = datetime.now()
+            else:
+                dt = datetime.now()
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 
     def _get_gps_text(self):
         if not self.gnss or not self.enable_gps_overlay: return ""
