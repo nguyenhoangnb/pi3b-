@@ -288,11 +288,24 @@ class VideoRecorder:
                 self.gnss = None
                 self.enable_gps_overlay = False
 
-            try:
-                self.rtc = rtcModule()
-                print("✓ RTC module initialized")
-            except Exception as e:
-                print(f"⚠ RTC not available: {e}")
+            # RTC (optional - only if you really need hardware RTC)
+            # Disable if getting "Device or resource busy" errors
+            if self.config.get('capabilities', {}).get('rtc', False):
+                try:
+                    self.rtc = rtcModule()
+                    print("✓ RTC module initialized")
+                    # Test read RTC to ensure it works
+                    try:
+                        _ = self.rtc.read_time()
+                    except Exception as e:
+                        print(f"⚠ RTC test failed: {e}, disabling RTC")
+                        self.rtc.close()
+                        self.rtc = None
+                except Exception as e:
+                    print(f"⚠ RTC not available: {e}")
+                    self.rtc = None
+            else:
+                print("ℹ RTC disabled in config")
                 self.rtc = None
 
             self._setup_hls_streaming()
@@ -302,18 +315,32 @@ class VideoRecorder:
 
     # ---------------- RTC / TIME ----------------
     def _get_time_text(self):
+        """Get time text with RTC fallback to system time"""
         try:
             if self.rtc:
-                with self.rtc_lock:
-                    dt = self.rtc.read_time()
+                # Try to acquire lock with timeout
+                if self.rtc_lock.acquire(blocking=False):
+                    try:
+                        dt = self.rtc.read_time()
+                        return dt.strftime("%Y-%m-%d %H:%M:%S")
+                    finally:
+                        self.rtc_lock.release()
+                else:
+                    # Lock busy, use system time
+                    dt = datetime.now()
+                    return dt.strftime("%Y-%m-%d %H:%M:%S")
             else:
+                # No RTC, use system time
                 dt = datetime.now()
-            return dt.strftime("%Y-%m-%d %H:%M:%S")
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
         except OSError as e:
-            print(f"⚠ RTC busy, fallback to system time: {e}")
-            return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # RTC hardware busy, fallback to system time (suppress warning spam)
+            dt = datetime.now()
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception as e:
+            # Any other error, use system time
+            dt = datetime.now()
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # ---------------- GPS / OVERLAY ----------------
     def _get_gps_text(self):
