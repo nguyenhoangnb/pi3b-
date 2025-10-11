@@ -4,6 +4,7 @@
 # Đi tới thư mục pi3b-
 cd ~/pi3b- || { echo "❌ Thư mục pi3b- không tồn tại"; exit 1; }
 
+git pull
 # Kích hoạt virtual environment
 if [ -f ".venv/bin/activate" ]; then
     echo "🚀 Kích hoạt virtual environment..."
