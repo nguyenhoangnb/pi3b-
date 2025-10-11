@@ -556,14 +556,19 @@ class VideoRecorder:
             # Start camera capture using ffmpeg-python
             width, height, fps = self.config['camera']['width'], self.config['camera']['height'], self.config['camera']['fps']
             
+            # Camera outputs YUYV, we need to convert to BGR24 for OpenCV processing
             camera_stream = (
                 ffmpeg
-                .input(self.config['camera']['device'], f='v4l2', video_size=f'{width}x{height}', framerate=fps)
-                .output('pipe:', format='rawvideo', pix_fmt='bgr24')
+                .input(self.config['camera']['device'], 
+                       f='v4l2', 
+                       input_format='yuyv422',  # Camera native format
+                       video_size=f'{width}x{height}', 
+                       framerate=fps)
+                .output('pipe:', format='rawvideo', pix_fmt='bgr24')  # Convert to BGR24
                 .global_args('-hide_banner', '-loglevel', 'error')
             )
             
-            print(f"📸 Starting camera: {self.config['camera']['device']}")
+            print(f"📸 Starting camera: {self.config['camera']['device']} (YUYV→BGR24)")
             self.camera_stream = ffmpeg.run_async(
                 camera_stream,
                 pipe_stdin=False,
