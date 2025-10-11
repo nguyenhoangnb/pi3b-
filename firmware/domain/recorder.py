@@ -378,8 +378,6 @@ class VideoRecorder:
     def _should_create_new_segment(self):
         if not self.segment_start_time:
             return True
-        t = time.time() - self.segment_start_time
-        print("Time: ", t)
         return (time.time() - self.segment_start_time) >= self.segment_duration
     # ---------------- HLS STREAM ----------------
     def _setup_hls_streaming(self):
@@ -506,10 +504,20 @@ class VideoRecorder:
             try:
                 print("⏹ Closing previous segment...")
                 self.current_recorder_process.stdin.close()
-                self.current_recorder_process.wait(timeout=2)
+                # Don't wait - just terminate immediately to avoid blocking
+                self.current_recorder_process.terminate()
+                # Give it 0.5s to finish gracefully, then kill
+                try:
+                    self.current_recorder_process.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    self.current_recorder_process.kill()
+                print("✓ Previous segment closed")
             except Exception as e:
                 print(f"⚠ Error closing previous segment: {e}")
-                self.current_recorder_process.kill()
+                try:
+                    self.current_recorder_process.kill()
+                except:
+                    pass
             self.current_recorder_process = None
 
         # Create output file path
@@ -553,10 +561,12 @@ class VideoRecorder:
             cmd.append("-an")  # No audio
             print("ℹ Audio disabled")
 
-        # Video encoding
+        # Video encoding - use software encoder for stability
         cmd.extend([
-            "-c:v", "h264_v4l2m2m",  # Hardware encoder
-            "-b:v", "2M",
+            "-c:v", "libx264",  # Software encoder (more stable than h264_v4l2m2m)
+            "-preset", "ultrafast",  # Fast encoding for real-time
+            "-tune", "zerolatency",  # Low latency
+            "-b:v", "1M",  # Lower bitrate for Pi3B+
             "-pix_fmt", "yuv420p",
             str(output_file)
         ])
