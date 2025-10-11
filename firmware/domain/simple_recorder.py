@@ -8,6 +8,7 @@ import pyaudio
 import wave
 import subprocess
 from datetime import datetime
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Hardware components
 from firmware.hal.usb_manager import USBManager
