@@ -463,6 +463,7 @@ class VideoRecorder:
             if self.rtc:
                 # Use RTC time if available
                 dt = self.rtc.read_time()
+                print(dt)
             else:
                 # Use system time
                 dt = datetime.now()
@@ -554,164 +555,109 @@ class VideoRecorder:
         return frame
     
     def _create_new_segment(self):
-        """Create a new video segment file with audio support"""
-        if not self.usb_manager.is_available():
-            print("⚠ USB not available, waiting...")
-            self.usb_manager.wait_until_available()
-        
-        if not self.usb_manager.has_enough_space():
-            print("⚠ Insufficient space, cleaning up...")
-            return False
-        
-        # Close current recording process if exists
+        """Create new recording segment"""
+        # Close previous recording if exists
         if self.current_recorder_process:
             try:
                 self.current_recorder_process.stdin.close()
-                self.current_recorder_process.terminate()
-                self.current_recorder_process.wait(timeout=3)
-                print("✓ Previous recording process closed safely")
-            except Exception as e:
-                print(f"⚠ Error closing previous recording process: {e}")
-        
-        # Close current OpenCV writer if exists (fallback)
-        if self.current_writer:
-            try:
-                self.current_writer.release()
-            except Exception as e:
-                print(f"⚠ Error closing OpenCV writer: {e}")
+                self.current_recorder_process.wait(timeout=2)
+            except:
+                self.current_recorder_process.kill()
+            self.current_recorder_process = None
         
         # Create new filename
         filename = self.usb_manager.get_new_filename()
         
-        # Try to create FFmpeg recording process with audio (if available)
-        if self.enable_audio and self.micro:
-            success = self._create_ffmpeg_recorder_with_audio(filename)
-        else:
-            success = self._create_opencv_recorder(filename)
+        # Create FFmpeg recording process with audio
+        success = self._create_ffmpeg_recorder_with_audio(filename)
         
         if success:
             self.segment_start_time = time.time()
-            print(f"📹 New segment: {os.path.basename(filename)}")
+            print(f"✓ New segment started: {filename}")
             return True
         else:
-            print(f"✗ Failed to create recorder for {filename}")
+            print(f"✗ Failed to start segment: {filename}")
             return False
     
     def _create_ffmpeg_recorder_with_audio(self, filename):
         """Create FFmpeg recording process optimized for Raspberry Pi 3B+"""
         try:
             cam_config = self.config['camera']
-            audio_config = self.config.get('audio', {})
-            width = cam_config.get('width', 640)
-            height = cam_config.get('height', 480)
-            fps = cam_config.get('fps', 15)
-
-            # --- Chọn thư mục lưu ---
-            base_dir = Path("/media/ssd/picam") if Path("/media/ssd/picam").exists() else Path("/home/pi/videos")
-            base_dir.mkdir(parents=True, exist_ok=True)
-            output_file = base_dir / filename
-
-            # --- Xác định thiết bị audio ---
-            use_audio = False
-            if os.path.exists("/dev/snd"):
-                use_audio = True
-
-            # --- Tạo command ---
-            cmd = [
-                "ffmpeg", "-hide_banner", "-loglevel", "error",
-                # Video input (pipe)
-                "-f", "rawvideo",
-                "-pix_fmt", "bgr24",
-                "-s", f"{width}x{height}",
-                "-r", str(fps),
-                "-i", "pipe:0",
+            width = cam_config['width']
+            height = cam_config['height']
+            fps = cam_config['fps']
+            
+            # Build FFmpeg command
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-y',  # Overwrite output
+                '-f', 'rawvideo',
+                '-vcodec', 'rawvideo',
+                '-pix_fmt', 'bgr24',
+                '-s', f'{width}x{height}',
+                '-r', str(fps),
+                '-i', '-',  # stdin for video
             ]
-
-            # --- Audio input (nếu có) ---
-            if use_audio:
-                # Ensure audio device string is valid
-                audio_device = audio_config.get('device') or "plughw:1,0"
-                # Defensive: convert None to default string
-                if audio_device is None:
-                    audio_device = "plughw:1,0"
-                cmd.extend([
-                    "-f", "alsa",
-                    "-ac", str(audio_config.get('channels', 1)),
-                    "-ar", str(audio_config.get('sample_rate', 16000)),
-                    "-i", str(audio_device),
+            
+            # Add audio input if available
+            if self.enable_audio and self.micro and self.micro.check_device_available():
+                audio_device = self.config.get('audio', {}).get('device', 'hw:1,0')
+                ffmpeg_cmd.extend([
+                    '-f', 'alsa',
+                    '-i', audio_device,
+                    '-ac', '1',  # Mono
+                    '-ar', '16000',  # 16kHz sample rate
                 ])
-
-            # --- Encoding settings ---
-            cmd.extend([
-                "-c:v", "h264_v4l2m2m",       # phần cứng GPU encoder
-                "-b:v", "2M",                 # bitrate vừa phải
-                "-pix_fmt", "yuv420p",
-            ])
-
-            if use_audio:
-                cmd.extend([
-                    "-c:a", "aac",
-                    "-b:a", "128k",
-                    "-map", "0:v:0",
-                    "-map", "1:a:0",
-                ])
+                print(f"✓ Audio enabled: {audio_device}")
             else:
-                cmd.append("-an")  # disable audio nếu không có mic
-
-            # --- Các tùy chọn đồng bộ ---
-            cmd.extend([
-                "-vsync", "1",
-                "-async", "1",
-                "-movflags", "+faststart",
-                str(output_file)
+                print("⚠ Audio disabled or not available")
+            
+            # Video encoding settings for Pi 3B+
+            ffmpeg_cmd.extend([
+                '-c:v', 'libx264',
+                '-preset', 'ultrafast',
+                '-tune', 'zerolatency',
+                '-crf', '28',
+                '-maxrate', '2M',
+                '-bufsize', '4M',
+                '-g', str(fps * 2),
+                '-pix_fmt', 'yuv420p',
             ])
-
-            print(f"🎬 Starting FFmpeg optimized recording → {output_file}")
+            
+            # Audio encoding if audio is present
+            if self.enable_audio and self.micro and self.micro.check_device_available():
+                ffmpeg_cmd.extend([
+                    '-c:a', 'aac',
+                    '-b:a', '64k',
+                ])
+            
+            # Output file
+            ffmpeg_cmd.extend([
+                '-f', 'mp4',
+                '-movflags', '+faststart',
+                filename
+            ])
+            
+            print(f"🎬 Starting FFmpeg: {' '.join(ffmpeg_cmd)}")
+            
             self.current_recorder_process = subprocess.Popen(
-                cmd,
+                ffmpeg_cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                bufsize=10**7  # tăng dung lượng buffer để tránh pipe broken
+                stderr=subprocess.DEVNULL
             )
-
-            # --- Kiểm tra khởi động ---
+            
+            # Check if process started
             time.sleep(0.3)
             if self.current_recorder_process.poll() is not None:
-                err = self.current_recorder_process.stderr.read().decode('utf-8', errors='ignore')
-                print(f"❌ FFmpeg failed to start: {err}")
-                self.current_recorder_process = None
+                print("✗ FFmpeg process died immediately")
                 return False
 
-            print("✅ FFmpeg hardware-accelerated recording started")
+            print("✅ FFmpeg recording started")
             return True
 
         except Exception as e:
             print(f"⚠ FFmpeg recorder error: {e}")
-            return False
-    
-    def _create_opencv_recorder(self, filename):
-        """Fallback: Create OpenCV video writer (video only)"""
-        try:
-            fourcc = cv2.VideoWriter_fourcc(*self.config['recording']['format'])
-            cam_config = self.config['camera']
-            
-            self.current_writer = cv2.VideoWriter(
-                filename,
-                fourcc,
-                cam_config['fps'],
-                (cam_config['width'], cam_config['height'])
-            )
-            
-            if self.current_writer.isOpened():
-                print("✓ OpenCV video recording started (no audio)")
-                return True
-            else:
-                print("✗ Failed to create OpenCV video writer")
-                return False
-                
-        except Exception as e:
-            print(f"⚠ OpenCV recording error: {e}")
             return False
     
     def _should_create_new_segment(self):
@@ -741,9 +687,13 @@ class VideoRecorder:
                 # Check USB availability
                 if not self.usb_manager.is_available():
                     print("⚠ USB disconnected, waiting...")
-                    if self.current_writer:
-                        self.current_writer.release()
-                        self.current_writer = None
+                    if self.current_recorder_process:
+                        try:
+                            self.current_recorder_process.stdin.close()
+                            self.current_recorder_process.wait(timeout=2)
+                        except:
+                            self.current_recorder_process.kill()
+                        self.current_recorder_process = None
                     self.usb_manager.wait_until_available()
                     continue
                 
@@ -763,26 +713,20 @@ class VideoRecorder:
                     # Add overlays for recording
                     frame_with_overlays = self._add_overlays(frame)
                     
-                    # Write to recording (FFmpeg with audio or OpenCV fallback)
+                    # Write to FFmpeg recording
                     if self.current_recorder_process:
-                        # FFmpeg recording with audio
                         try:
                             self.current_recorder_process.stdin.write(frame_with_overlays.tobytes())
                             self.current_recorder_process.stdin.flush()
                         except BrokenPipeError:
-                            print("⚠ Recording pipe broken")
-                            self.current_recorder_process = None
+                            print("⚠ Recording pipe broken, creating new segment...")
+                            self.segment_start_time = 0  # Force new segment
                         except Exception as e:
                             print(f"⚠ Recording write error: {e}")
-                    elif self.current_writer and self.current_writer.isOpened():
-                        # OpenCV fallback (video only)
-                        self.current_writer.write(frame_with_overlays)
                     
                     # Write to HLS stream (without overlays for better performance)
-                    # Use original frame for live view
                     if self.hls_enabled:
                         if not self._write_frame_to_hls(frame):
-                            # Restart HLS every 100 failed writes
                             hls_restart_counter += 1
                             if hls_restart_counter >= 100:
                                 print("⚠ Too many HLS write failures, restarting...")
@@ -809,47 +753,32 @@ class VideoRecorder:
         # Stop HLS streaming
         self._stop_hls_stream()
         
-        # Close recording process (FFmpeg with audio)
+        # Close FFmpeg recording process
         if self.current_recorder_process:
             try:
-                if self.current_recorder_process.stdin:
-                    self.current_recorder_process.stdin.close()
-                self.current_recorder_process.terminate()
-                self.current_recorder_process.wait(timeout=5)
-                print("✓ Recording process closed")
-            except Exception as e:
-                print(f"⚠ Error closing recording process: {e}")
-                try:
-                    self.current_recorder_process.kill()
-                except:
-                    pass
+                print("⏹ Stopping FFmpeg recorder...")
+                self.current_recorder_process.stdin.close()
+                self.current_recorder_process.wait(timeout=3)
+                print("✓ FFmpeg recorder stopped")
+            except:
+                print("⚠ Force killing FFmpeg recorder...")
+                self.current_recorder_process.kill()
             self.current_recorder_process = None
-        
-        # Close video writer (fallback)
-        if self.current_writer:
-            try:
-                self.current_writer.release()
-                print("✓ Video writer closed")
-            except Exception as e:
-                print(f"⚠ Error closing video writer: {e}")
-            self.current_writer = None
         
         # Stop camera
         if self.camera:
             try:
                 self.camera.stop()
-                print("✓ Camera stopped")
-            except Exception as e:
-                print(f"⚠ Error stopping camera: {e}")
+            except:
+                pass
         
         # Turn off LED
         if self.record_led:
             try:
                 self.record_led.off()
-                print("✓ Record LED turned off")
-            except Exception as e:
-                print(f"⚠ Error with LED: {e}")
-    
+            except:
+                pass
+            
     def start_recording(self):
         """Start recording in background thread"""
         if self.is_recording:
