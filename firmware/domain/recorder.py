@@ -380,14 +380,16 @@ class VideoRecorder:
                     vcodec='libx264',
                     preset='ultrafast',
                     tune='zerolatency',
-                    **{'b:v': '800k'},  # Higher bitrate for better quality
-                    g=self.target_fps,  # GOP size = frame rate
+                    **{'b:v': '1000k'},  # Slightly higher bitrate
+                    g=int(self.target_fps/2),  # Smaller GOP size for lower latency
                     **{'r': self.target_fps},  # Force constant frame rate
+                    **{'sc_threshold': '0'},  # Disable scene change detection
+                    **{'flags': 'low_delay'},  # Enable low delay flags
                     pix_fmt='yuv420p',
                     f='hls',
-                    hls_time=2,
-                    hls_list_size=5,
-                    hls_flags='delete_segments+omit_endlist',  # Add omit_endlist for live streaming
+                    hls_time=1,  # Reduce segment time to 1 second
+                    hls_list_size=3,  # Keep fewer segments
+                    hls_flags='delete_segments+omit_endlist+append_list',  # Add append_list for lower latency
                     hls_segment_filename=str(self.hls_dir / 'segment_%03d.ts')
                 )
                 .global_args('-hide_banner', '-loglevel', 'error')
