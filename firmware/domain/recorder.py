@@ -540,7 +540,13 @@ class VideoRecorder:
 
         # Add audio if available
         if self.micro and self.enable_audio:
-            audio_device = self.config['audio'].get('device') or "plughw:1,0"
+            audio_device = self.config['audio'].get('device') or "hw:1,0"
+            # Convert hw:X,Y to plughw:X,Y for FFmpeg (plughw provides format conversion)
+            if audio_device.startswith("hw:"):
+                ffmpeg_audio_device = audio_device.replace("hw:", "plughw:", 1)
+            else:
+                ffmpeg_audio_device = audio_device
+            
             audio_rate = self.config['audio'].get('sample_rate', 48000)
             audio_ch = self.config['audio'].get('channels', 1)
             cmd.extend([
@@ -548,13 +554,13 @@ class VideoRecorder:
                 "-thread_queue_size", "512",
                 "-ac", str(audio_ch),
                 "-ar", str(audio_rate),
-                "-i", audio_device,
+                "-i", ffmpeg_audio_device,
                 "-c:a", "aac",
                 "-b:a", "128k",
                 "-map", "0:v:0",
                 "-map", "1:a:0"
             ])
-            print(f"✓ Audio enabled: {audio_device}")
+            print(f"✓ Audio enabled: {ffmpeg_audio_device}")
         else:
             cmd.extend(["-an"])
             print("ℹ Audio disabled")
