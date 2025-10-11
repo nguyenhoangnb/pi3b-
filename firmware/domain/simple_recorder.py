@@ -583,7 +583,8 @@ class VideoRecorder:
 if __name__ == "__main__":
     # Load config from YAML file
     try:
-        config = load("firmware/config/device_full.yaml")
+        config_file = Path(__file__).parent.parent / 'config' / 'device_full.yaml'
+        config = load(config_file)
         
         # Map config values from YAML to recorder config structure
         recorder_config = {
