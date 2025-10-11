@@ -30,7 +30,7 @@ class VideoRecorder:
     def __init__(self, config=None):
         """Initialize video recorder with simple OpenCV capture"""
         # Default config
-        self.config = {
+        default_config = {
             'camera': {
                 'device': 0,  # Default camera
                 'width': 640,
@@ -51,6 +51,9 @@ class VideoRecorder:
                 'container': 'mkv',     # Container format
                 'filename_pattern': "%Y%m%d-%H%M%S.mkv"  # Filename pattern
             },
+            'gpio': {
+                'record_led': 26  # Default GPIO pin for record LED
+            },
             'overlay': {
                 'timestamp': True,
                 'gps': False,
@@ -67,8 +70,13 @@ class VideoRecorder:
                 'bitrate': '800k'
             }
         }
+        # Deep merge configs
+        self.config = default_config.copy()
         if config:
-            self.config.update(config)
+            for section in default_config:
+                if section in config:
+                    if isinstance(default_config[section], dict):
+                        self.config[section].update(config[section])
         
         # Initialize components
         self.is_recording = False
@@ -436,9 +444,15 @@ class VideoRecorder:
             print("✓ USB Manager initialized")
 
             # Record LED
-            if 'gpio' in self.config:
-                self.record_led = gpioLed(self.config['gpio'].get('record_led', 26))
-                print("✓ Record LED initialized")
+            if 'gpio' in self.config and 'record_led' in self.config['gpio']:
+                try:
+                    self.record_led = gpioLed(self.config['gpio']['record_led'])
+                    # Test LED
+                    self.record_led.off()  # Make sure LED is off initially
+                    print("✓ Record LED initialized")
+                except Exception as e:
+                    print(f"⚠ Record LED init failed: {e}")
+                    self.record_led = None
             
             # GNSS Module
             if self.config.get('capabilities', {}).get('gnss', False):
@@ -584,37 +598,41 @@ if __name__ == "__main__":
     # Load config from YAML file
     try:
         config_file = Path(__file__).parent.parent / 'config' / 'device_full.yaml'
-        config = load(config_file)
+        yaml_config = load(config_file)
+        print(f"✓ Loaded config from {config_file}")
         
         # Map config values from YAML to recorder config structure
         recorder_config = {
             'camera': {
-                'device': config['video']['v4l2_device'],
-                'width': int(config['video']['v4l2_format'].split('x')[0]),
-                'height': int(config['video']['v4l2_format'].split('x')[1]),
-                'fps': config['video']['v4l2_fps'],
+                'device': yaml_config['video']['v4l2_device'],
+                'width': int(yaml_config['video']['v4l2_format'].split('x')[0]),
+                'height': int(yaml_config['video']['v4l2_format'].split('x')[1]),
+                'fps': yaml_config['video']['v4l2_fps'],
                 'fourcc': 'MJPG'
             },
             'audio': {
-                'enabled': config['capabilities']['audio'],
-                'device': config['audio']['device'],
-                'channels': config['audio']['channels'],
-                'rate': config['audio']['sample_rate']
+                'enabled': yaml_config['capabilities'].get('audio', False),
+                'device': yaml_config.get('audio', {}).get('device'),
+                'channels': yaml_config.get('audio', {}).get('channels', 1),
+                'rate': yaml_config.get('audio', {}).get('sample_rate', 44100),
+                'format': pyaudio.paInt16,  # Fixed format
+                'chunk': 1024  # Fixed chunk size
             },
             'storage': {
-                'path': config['paths']['record_root'],
-                'segment_seconds': config['storage']['segment_seconds'],
-                'container': config['storage']['container'],
-                'filename_pattern': config['storage']['filename_pattern']
+                'path': yaml_config['paths']['record_root'],
+                'segment_seconds': yaml_config['storage']['segment_seconds'],
+                'container': yaml_config['storage']['container'],
+                'filename_pattern': yaml_config['storage']['filename_pattern']
             },
             'gpio': {
-                'record_led': config['gpio']['record_led']
+                'record_led': yaml_config['gpio'].get('record_led')
             },
             'capabilities': {
-                'gnss': config['capabilities']['gnss'],
+                'gnss': yaml_config['capabilities'].get('gnss', False),
                 'rtc': True  # Default to True since it's a core feature
             }
         }
+        print("✓ Config mapped successfully")
    
         recorder = VideoRecorder(recorder_config)
         print("Press Enter to start recording...")
