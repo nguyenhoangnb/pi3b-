@@ -375,12 +375,12 @@ class VideoRecorder:
             stream = (
                 ffmpeg
                 .input('pipe:0', format='rawvideo', pix_fmt='bgr24', s=f'{width}x{height}', r=fps)
-                .video.filter('scale', 1280, 720)
+                .filter('scale', 1280, 720)
                 .output(str(hls_playlist),
-                    codec_video='libx264',
+                    vcodec='libx264',
                     preset='ultrafast',
                     tune='zerolatency',
-                    b_v='500k',
+                    **{'b:v': '500k'},
                     g=int(fps * 2),
                     pix_fmt='yuv420p',
                     f='hls',
@@ -389,17 +389,15 @@ class VideoRecorder:
                     hls_flags='delete_segments',
                     hls_segment_filename=str(self.hls_dir / 'segment_%03d.ts')
                 )
-                .compile(cmd='ffmpeg', args=['-hide_banner', '-loglevel', 'error'])
+                .global_args('-hide_banner', '-loglevel', 'error')
             )
             
             print(f"🌐 Starting HLS stream: {hls_playlist}")
             self.hls_process = ffmpeg.run_async(
-                stream[0],
-                cmd='ffmpeg',
+                stream,
                 pipe_stdin=True,
                 pipe_stdout=False,
-                pipe_stderr=False,
-                quiet=True
+                pipe_stderr=False
             )
             print("✓ HLS stream started")
             return True
@@ -480,7 +478,7 @@ class VideoRecorder:
         try:
             # Build video input from pipe
             video = ffmpeg.input('pipe:0', format='rawvideo', pix_fmt='bgr24', s=f'{width}x{height}', r=fps)
-            video = video.video.filter('scale', width, height)
+            video = video.filter('scale', width, height)
             
             # Check if audio is enabled
             if self.micro and self.enable_audio:
@@ -499,43 +497,39 @@ class VideoRecorder:
                 
                 # Combine video and audio
                 output = ffmpeg.output(video, audio, str(output_file),
-                    codec_v='libx264',
+                    vcodec='libx264',
                     preset='ultrafast',
                     tune='zerolatency',
-                    b_v='1M',
+                    **{'b:v': '1M'},
                     pix_fmt='yuv420p',
-                    codec_a='aac',
-                    b_a='128k',
+                    acodec='aac',
+                    **{'b:a': '128k'},
                     max_interleave_delta='0',
                     fflags='+genpts'
-                )
+                ).global_args('-hide_banner', '-loglevel', 'error', '-y')
                 
                 print(f"✓ Audio enabled: {ffmpeg_audio_device} ({audio_rate}Hz, {audio_ch}ch)")
             else:
                 # Video only
                 output = ffmpeg.output(video, str(output_file),
-                    codec_v='libx264',
+                    vcodec='libx264',
                     preset='ultrafast',
                     tune='zerolatency',
-                    b_v='1M',
+                    **{'b:v': '1M'},
                     pix_fmt='yuv420p',
                     an=None,  # No audio
                     max_interleave_delta='0',
                     fflags='+genpts'
-                )
+                ).global_args('-hide_banner', '-loglevel', 'error', '-y')
                 print("ℹ Audio disabled")
-            
-            # Compile command
-            cmd = output.compile(cmd='ffmpeg', args=['-hide_banner', '-loglevel', 'error', '-y'])
             
             print(f"🎬 Starting FFmpeg recording: {output_file}")
             
             self.current_recorder_process = ffmpeg.run_async(
-                cmd[0],
+                output,
                 pipe_stdin=True,
                 pipe_stdout=False,
-                pipe_stderr=False,
-                quiet=True
+                pipe_stderr=False
             )
             
             time.sleep(0.2)
@@ -565,18 +559,16 @@ class VideoRecorder:
             camera_stream = (
                 ffmpeg
                 .input(self.config['camera']['device'], f='v4l2', video_size=f'{width}x{height}', framerate=fps)
-                .output('pipe:1', format='rawvideo', pix_fmt='bgr24')
-                .compile(cmd='ffmpeg', args=['-hide_banner', '-loglevel', 'error'])
+                .output('pipe:', format='rawvideo', pix_fmt='bgr24')
+                .global_args('-hide_banner', '-loglevel', 'error')
             )
             
             print(f"📸 Starting camera: {self.config['camera']['device']}")
             self.camera_stream = ffmpeg.run_async(
-                camera_stream[0],
-                cmd='ffmpeg',
+                camera_stream,
                 pipe_stdin=False,
                 pipe_stdout=True,
-                pipe_stderr=False,
-                quiet=True
+                pipe_stderr=False
             )
             
             # Test read frame
@@ -621,12 +613,10 @@ class VideoRecorder:
                             
                             # Restart camera
                             self.camera_stream = ffmpeg.run_async(
-                                camera_stream[0],
-                                cmd='ffmpeg',
+                                camera_stream,
                                 pipe_stdin=False,
                                 pipe_stdout=True,
-                                pipe_stderr=False,
-                                quiet=True
+                                pipe_stderr=False
                             )
                             print("✓ Camera restarted")
                             

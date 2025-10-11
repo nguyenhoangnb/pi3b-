@@ -21,7 +21,8 @@ def _mjpeg_from_hls():
                 'pix_fmt': 'yuvj422p',
                 'boundary_tag': 'frame'
             })
-            .run_async(pipe_stdout=True, pipe_stderr=True, quiet=True)
+            .global_args('-hide_banner', '-loglevel', 'error')
+            .run_async(pipe_stdout=True, pipe_stderr=True)
         )
         
         while True:
@@ -52,7 +53,8 @@ def _mjpeg_from_v4l2(dev: str, fmt: str):
                 'pix_fmt': 'yuvj422p',
                 'boundary_tag': 'frame'
             })
-            .run_async(pipe_stdout=True, pipe_stderr=True, quiet=True)
+            .global_args('-hide_banner', '-loglevel', 'error')
+            .run_async(pipe_stdout=True, pipe_stderr=True)
         )
         
         while True:
