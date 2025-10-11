@@ -1,2 +1,3 @@
 test*.py
 **/picam-recoder.service
+/push_git.sh
