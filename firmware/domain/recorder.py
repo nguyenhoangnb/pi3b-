@@ -958,15 +958,16 @@ def main():
         # Initialize recorder (auto-starts recording)
         recorder = VideoRecorder()
         print("✓ VideoRecorder service started and recording")
+        recorder.start_recording()
         
-        # Keep service running until interrupted
-        while True:
-            time.sleep(1)
+        # # Keep service running until interrupted
+        # while True:
+        #     time.sleep(1)
             
-            # Simple health check - restart recording if it died
-            if not recorder.is_recording:
-                print("⚠ Recording stopped unexpectedly, restarting...")
-                recorder.start_recording()
+        #     # Simple health check - restart recording if it died
+        #     if not recorder.is_recording:
+        #         print("⚠ Recording stopped unexpectedly, restarting...")
+        #         recorder.start_recording()
                 
     except KeyboardInterrupt:
         print("\n🛑 Service shutdown requested (SIGINT)")
