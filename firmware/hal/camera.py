@@ -63,11 +63,22 @@ class FFmpegCamera:
         self._stop = True
         if self.proc:
             try:
-                self.proc.kill()
+                # Close stdout pipe to signal FFmpeg to stop
+                self.proc.stdout.close()
             except:
                 pass
             try:
-                self.proc.wait(timeout=1)
+                # Give FFmpeg time to cleanup gracefully
+                self.proc.terminate()
+                self.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                # Force kill if it doesn't terminate
+                self.proc.kill()
+                try:
+                    self.proc.wait(timeout=1)
+                except:
+                    pass
             except:
                 pass
-            self.proc = None
+            finally:
+                self.proc = None
