@@ -415,6 +415,7 @@ class VideoRecorder:
                 "-tune", "zerolatency",
                 "-b:v", "500k",  # Lower bitrate for streaming
                 "-g", str(fps * 2),  # Keyframe every 2 seconds
+                "-pix_fmt", "yuv420p",  # Standard pixel format
                 "-f", "hls",
                 "-hls_time", "2",  # 2 second segments
                 "-hls_list_size", "5",  # Keep 5 segments in playlist

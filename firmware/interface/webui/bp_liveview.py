@@ -75,35 +75,21 @@ def _mjpeg_from_v4l2(dev: str, fmt: str):
 
 def _ensure_recorder_running():
     """
-    Ensure recorder is running to provide HLS stream.
-    Returns True if recorder is active or successfully started.
+    Check if recorder is running to provide HLS stream.
+    Returns True if recorder is active.
+    NOTE: Does NOT auto-start recorder to avoid camera conflicts.
     """
     recorder = get_recorder()
     if recorder is None:
         print("⚠ VideoRecorder not available")
         return False
     
-    # If already recording, return immediately
+    # Just check if recording is active, don't start it
     if recorder:
         return True
     
-    # Start recording
-    print("🚀 Starting recorder for live view...")
-    try:
-        start_service("picam-recorder")
-        result = check_service("picam-recorder")
-        if  result != "active":
-            print("⚠ Failed to start recorder")
-            return False
-        
-        # Wait a bit for recorder to actually start
-        # (recording thread is daemon and starts asynchronously)
-        time.sleep(0.5)
-        return True
-        
-    except Exception as e:
-        print(f"⚠ Error starting recorder: {e}")
-        return False
+    print("ℹ Recorder not active")
+    return False
 
 
 def _wait_for_hls_ready(timeout: float = 5.0) -> bool:

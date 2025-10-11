@@ -24,3 +24,5 @@ else
     sudo rm -f /etc/sudoers.d/picam-service-control
     exit 1
 fi
+
+./install_service.sh
