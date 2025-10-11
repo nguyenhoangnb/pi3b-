@@ -319,7 +319,7 @@ class VideoRecorder:
                 self.usb_manager.wait_until_available(); continue
 
             if self._should_create_new_segment(): self._create_new_segment()
-            frame=self.camera.read()
+            frame=self.camera.read_frame()
             if frame is None: time.sleep(0.05); continue
 
             frame_with_overlay=self._add_overlays(frame)
