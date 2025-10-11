@@ -123,7 +123,7 @@ def _wait_for_hls_ready(timeout: float = 1.0) -> bool:
 
 @bp.get("/hls/live.m3u8")
 def hls_playlist():
-    """Serve HLS playlist file"""
+    """Serve HLS playlist file with auto-reload"""
     m3u8_file = HLS_DIR / "live.m3u8"
     
     if not m3u8_file.exists():
@@ -136,13 +136,23 @@ def hls_playlist():
             mimetype="application/vnd.apple.mpegurl"
         )
     
-    return send_from_directory(HLS_DIR, "live.m3u8")
+    response = send_from_directory(HLS_DIR, "live.m3u8")
+    # Add headers for auto-reload
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 
 @bp.get("/hls/<path:name>")
 def hls_files(name: str):
-    """Serve HLS segment files (.ts)"""
-    return send_from_directory(HLS_DIR, name)
+    """Serve HLS segment files (.ts) with auto-reload"""
+    response = send_from_directory(HLS_DIR, name)
+    # Add headers for auto-reload and proper caching
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 
 @bp.get("/live.mjpg")
