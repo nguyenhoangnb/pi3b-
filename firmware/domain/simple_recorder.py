@@ -614,9 +614,7 @@ if __name__ == "__main__":
                 'rtc': True  # Default to True since it's a core feature
             }
         }
-    except:
-        pass
-    try:
+   
         recorder = VideoRecorder(recorder_config)
         print("Press Enter to start recording...")
         input()
