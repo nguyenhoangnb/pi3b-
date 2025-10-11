@@ -562,8 +562,8 @@ class VideoRecorder:
                 .input(self.config['camera']['device'], 
                        f='v4l2', 
                        input_format='yuyv422',  # Camera native format
-                       video_size=f'{width}x{height}', 
-                       framerate=fps)
+                       framerate=fps,
+                       video_size=f'{width}x{height}')
                 .output('pipe:', format='rawvideo', pix_fmt='bgr24')  # Convert to BGR24
                 .global_args('-hide_banner', '-loglevel', 'error')
             )
