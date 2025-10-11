@@ -952,25 +952,31 @@ class VideoRecorder:
 def main():
     """Main service entry point for systemd"""
     print("🚀 PiCam VideoRecorder Service Starting...")
-    
+
     recorder = None
+    stop_event = threading.Event()
+
+    def _on_signal(sig, frame):
+        print(f"\n📡 Received signal {sig}, shutting down...")
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, _on_signal)
+    signal.signal(signal.SIGTERM, _on_signal)
+
     try:
-        # Initialize recorder (auto-starts recording)
+        # Initialize recorder (constructor already auto-starts recording)
         recorder = VideoRecorder()
         print("✓ VideoRecorder service started and recording")
-        recorder.start_recording()
-        
-        # # Keep service running until interrupted
-        # while True:
-        #     time.sleep(1)
-            
-        #     # Simple health check - restart recording if it died
-        #     if not recorder.is_recording:
-        #         print("⚠ Recording stopped unexpectedly, restarting...")
-        #         recorder.start_recording()
-                
-    except KeyboardInterrupt:
-        print("\n🛑 Service shutdown requested (SIGINT)")
+
+        # Keep process alive until signal received.
+        # Optionally do a simple health check every second.
+        while not stop_event.is_set():
+            time.sleep(1)
+            # Optional health check (uncomment if you want local restart)
+            # if not recorder.is_recording:
+            #     print("⚠ Recording stopped unexpectedly, restarting...")
+            #     recorder.start_recording()
+
     except Exception as e:
         print(f"❌ Service error: {e}")
         import traceback
