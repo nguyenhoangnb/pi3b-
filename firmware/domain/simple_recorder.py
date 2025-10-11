@@ -103,12 +103,12 @@ class VideoRecorder:
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config['camera']['height'])
         self.camera.set(cv2.CAP_PROP_FPS, self.config['camera']['fps'])
         
-        # Try to set additional optimization flags if available
+        # Force RGB color space conversion
         try:
             self.camera.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-            self.camera.set(cv2.CAP_PROP_CONVERT_RGB, 0)  # Avoid color space conversion if possible
+            self.camera.set(cv2.CAP_PROP_CONVERT_RGB, 1)  # Ensure RGB conversion
         except:
-            pass
+            print("⚠ Failed to set camera color format properties")
             
         # Check if camera opened successfully
         if not self.camera.isOpened():
@@ -541,6 +541,11 @@ class VideoRecorder:
             if ret:
                 errors_count = 0  # Reset error counter on successful read
                 try:
+                    # Check frame format and convert if needed
+                    if len(frame.shape) != 3 or frame.shape[2] != 3:
+                        print(f"⚠ Converting frame format from {frame.shape} to RGB")
+                        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR if len(frame.shape) == 2 else cv2.COLOR_BGR2RGB)
+                    
                     # Direct write for maximum performance
                     if self.video_writer.isOpened():
                         self.video_writer.write(frame)
@@ -548,20 +553,21 @@ class VideoRecorder:
                         print("⚠ Video writer is not opened!")
                         break
                         
-                    # Only add overlays to HLS stream if we're keeping up
-                    if read_time < 0.05:  # Only do extra processing if we're fast enough
+                    # Simplified frame processing pipeline
+                    frame_for_hls = frame  # Use original frame for HLS
+                    
+                    # Only add overlays if enabled and we're not behind
+                    if read_time < 0.03:  # Stricter timing check
                         if self.config['overlay']['timestamp'] or self.config['overlay']['gps']:
-                            frame_with_overlay = self._add_overlays(frame.copy())
-                        else:
-                            frame_with_overlay = frame
-                            
-                            # Write to HLS stream in background if enabled and not too far behind
-                            if (self.config['hls']['enabled'] and FFMPEG_AVAILABLE and 
-                                hasattr(self, 'hls_process') and read_time < 0.1):
-                                try:
-                                    self.hls_process.stdin.write(frame.tobytes())
-                                except (BrokenPipeError, OSError):
-                                    pass  # Skip HLS if having issues
+                            frame_for_hls = self._add_overlays(frame.copy())
+                    
+                    # Write to HLS stream if enabled and not too far behind
+                    if (self.config['hls']['enabled'] and FFMPEG_AVAILABLE and 
+                        hasattr(self, 'hls_process') and read_time < 0.05):  # Relaxed timing for HLS
+                        try:
+                            self.hls_process.stdin.write(frame_for_hls.tobytes())
+                        except (BrokenPipeError, OSError):
+                            pass  # Skip HLS if having issues
                             
                             self.frame_count += 1
                             frame_processed = True
