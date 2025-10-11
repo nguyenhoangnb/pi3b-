@@ -527,6 +527,7 @@ class VideoRecorder:
         
         frame_count = 0
         last_report = time.time()
+        no_frame_count = 0  # Track consecutive failed frame reads
         
         while not self._stop_recording:
             # Create new segment if needed
@@ -539,8 +540,26 @@ class VideoRecorder:
             # Read frame from camera
             frame = self.camera.read_frame()
             if frame is None:
+                no_frame_count += 1
+                # If no frames for 3 seconds, try to restart camera
+                if no_frame_count > 300:  # 300 * 0.01s = 3s
+                    print("⚠ No frames from camera for 3s, attempting restart...")
+                    try:
+                        self.camera.stop()
+                        time.sleep(1)
+                        self.camera.start()
+                        print("✓ Camera restarted")
+                        no_frame_count = 0
+                    except Exception as e:
+                        print(f"✗ Camera restart failed: {e}")
+                        # Wait before retry
+                        time.sleep(5)
+                        no_frame_count = 0
                 time.sleep(0.01)
                 continue
+            
+            # Reset no-frame counter on successful read
+            no_frame_count = 0
 
             # Add overlays
             frame_with_overlay = self._add_overlays(frame)
