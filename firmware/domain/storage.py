@@ -199,7 +199,8 @@ class PiStreamer:
         if self.micro.get_first_available_device():  # nếu có audio_dev
             cmd += [
                 "-f", "alsa",
-                "-ac", f'{self.audio_channels}',
+                "-ar", str(self.audio_rate),
+                "-ac", str(self.audio_channels),
                 "-i", self.audio_dev,
                 "-c:a", "aac",
                 "-b:a", "128k",
