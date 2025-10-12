@@ -29,7 +29,7 @@ video:
   v4l2_format: "640x480"
   v4l2_fps: 30
 audio:
-  device: "hw:0,6"  # USB Audio Device (card 1) - use hw instead of plughw
+  device: "hw:1,0"  # USB Audio Device (card 1) - use hw instead of plughw
   sample_rate: 48000
   channels: 1
 overlay:
