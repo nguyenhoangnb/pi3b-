@@ -171,10 +171,10 @@ class PiStreamer:
         """Tạo lệnh FFmpeg với hoặc không có audio."""
         hls_path = os.path.join(self.hls_dir, "live.m3u8")
 
-        # Tạo thư mục lưu segment theo thời gian
-        session_dir = datetime.now().strftime("session_%Y%m%d_%H%M%S")
-        record_dir = os.path.join(self.output_dir, session_dir)
-        os.makedirs(record_dir, exist_ok=True)
+        # # Tạo thư mục lưu segment theo thời gian
+        # session_dir = datetime.now().strftime("session_%Y%m%d_%H%M%S")
+        # record_dir = os.path.join(self.output_dir, session_dir)
+        # os.makedirs(record_dir, exist_ok=True)
         display_text = (
             "drawtext=textfile=/tmp/overlay.txt:reload=1"
             ":fontcolor=white"
@@ -223,7 +223,7 @@ class PiStreamer:
         cmd += map_args + [
             "-f", "tee",
             f"[f=segment:strftime=1:segment_time={self.segment_seconds}:reset_timestamps=1]"
-            f"'{record_dir}/%Y%m%d_%H%M%S_cam0.mp4'|"
+            f"'{self.output_dir}/%Y%m%d_%H%M%S_cam0.mp4'|"
             f"[f=hls:hls_time=4:hls_list_size=5:hls_flags=delete_segments]{hls_path}"
         ]
         print(cmd)
