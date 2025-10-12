@@ -1,5 +1,5 @@
 from __future__ import annotations
-from flask import current_app
+from flask import current_app, request
 from flask import Blueprint, render_template_string
 from pathlib import Path
 from .helpers import cfg_get, leds_status, iface_is_up, rec_is_active, disk_info, list_media, client_prefers_hls, time_info, hw_inventory
@@ -137,6 +137,8 @@ h1{margin:.2rem 0 1rem;font-size:1.6rem}h2{margin:.4rem 0 .8rem;font-size:1.1rem
 table{width:100%;border-collapse:collapse}th,td{padding:8px;border-bottom:1px solid var(--bd);text-align:left}.right{text-align:right}
 .danger{color:#fff;background:var(--err);border-color:var(--err)}.danger:hover{filter:brightness(.95)}.small{font-size:.9rem}code{background:#f6f8fa;padding:2px 6px;border-radius:6px}
 video,img{width:100%;max-height:62vh;background:#000;border-radius:12px}
+.links{display:flex;gap:1rem;flex-wrap:wrap;margin-top:.5rem}.links a{color:var(--muted);text-decoration:none}.links a:hover{text-decoration:underline}
+@media (max-width: 768px) {.kv{grid-template-columns:1fr}.row{flex-direction:column}.leds{justify-content:center}}
 </style></head><body><div class="wrap">{{body|safe}}</div></body></html>
 """
 
@@ -144,12 +146,29 @@ video,img{width:100%;max-height:62vh;background:#000;border-radius:12px}
 def index():
     cfg = current_app.config["PICAM_CFG"]
     dev = (cfg.get("device") or {})
-    record_root = Path(((cfg.get("paths") or {}).get("record_root") or "/media/ssd/picam"))
-    st = disk_info(record_root)
-    files = list_media(record_root)
+    
+    # Xử lý force query param để override prefer_hls
+    force = request.args.get('force', '').lower()
+    prefer_hls = client_prefers_hls() if force not in ['hls', 'mjpeg'] else (force == 'hls')
+    
+    record_root_str = ((cfg.get("paths") or {}).get("record_root") or "/media/ssd/picam")
+    record_root = Path(record_root_str)
+    
+    # Error handling cho disk_info nếu path không tồn tại
+    st = {}
+    if record_root.exists():
+        st = disk_info(record_root)
+    else:
+        current_app.logger.warning(f"Record root path not found: {record_root}")
+        st = {'total_gb': 0, 'used_gb': 0, 'free_gb': 0, 'mount': str(record_root)}
+    
+    files = []
+    if record_root.exists():
+        files = list_media(record_root)
+    
     body = render_template_string(_HTML,
         dev=dev, leds=leds_status(), recording=rec_is_active(), wifi_up=iface_is_up(cfg_get("wifi.iface","wlan0")),
-        prefer_hls=client_prefers_hls(),
+        prefer_hls=prefer_hls,
         storage=dict(path=str(record_root), mount=record_root.anchor or "/", min_free_gb=float(cfg_get("storage.min_free_gb",10)), **st),
         files=files,
         clock=time_info(),
