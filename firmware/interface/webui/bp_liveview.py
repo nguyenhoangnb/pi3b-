@@ -10,80 +10,19 @@ bp = Blueprint("liveview", __name__)
 HLS_DIR = Path("/tmp/picam_hls/")
 HLS_DIR.mkdir(parents=True, exist_ok=True)
 
-
+import subprocess
 def _mjpeg_from_hls():
-    """Convert HLS (.m3u8) to MJPEG stream with auto-reconnect"""
-    max_retries = 10
-    retry_count = 0
-
-    while retry_count < max_retries:
-        process = None
-        try:
-            process = (
-                ffmpeg
-                .input(
-                    str(HLS_DIR / "live.m3u8"),
-                    f='hls',
-                    rw_timeout='5000000',  # 5s
-                    reconnect='1',
-                    reconnect_streamed='1',
-                    reconnect_delay_max='2',
-                    fflags='+discardcorrupt+nobuffer',
-                    flags='low_delay',
-                    analyzeduration='500000',
-                    probesize='500000'
-                )
-                .output(
-                    'pipe:',
-                    format='mpjpeg',
-                    q=5,
-                    pix_fmt='yuvj422p',
-                    **{
-                        'vsync': '0',
-                        'thread_queue_size': '512',
-                        'max_muxing_queue_size': '1024',
-                        'boundary_tag': 'frame'
-                    }
-                )
-                .global_args('-hide_banner', '-loglevel', 'warning')
-                .run_async(pipe_stdout=True, pipe_stderr=True)
-            )
-
-            no_data_count = 0
-            while True:
-                if select.select([process.stdout], [], [], 0.2)[0]:
-                    chunk = process.stdout.read(8192)
-                    if not chunk:
-                        print("⚠ Empty chunk received, maybe EOF")
-                        break
-                    no_data_count = 0
-                    yield chunk
-                else:
-                    no_data_count += 1
-                    if no_data_count > 75:  # ~15s no data
-                        print("⚠ No MJPEG data for 15s → restart stream")
-                        break
-
-            print("⚠ Stream ended, restarting...")
-            raise Exception("Stream timeout or ended")
-
-        except Exception as e:
-            print(f"⚠ Stream error: {e}")
-            retry_count += 1
-            if retry_count < max_retries:
-                print(f"🔄 Retry {retry_count}/{max_retries}")
-                time.sleep(1)
-            else:
-                print("❌ Max retries reached, stopping stream")
-                break
-        finally:
-            if process is not None:
-                try:
-                    process.kill()
-                    process.wait(timeout=1)
-                except:
-                    pass
-
+    cmd = ["ffmpeg","-hide_banner","-loglevel","error","-re","-i", str(HLS_DIR/"live.m3u8"),
+           "-f","mpjpeg","-q:v","7","-pix_fmt","yuvj422p","-boundary_tag","frame","-"]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
+    try:
+        while True:
+            chunk = p.stdout.read(4096)
+            if not chunk: break
+            yield chunk
+    finally:
+        try: p.kill()
+        except: pass
 
 def _ensure_recorder_running() -> bool:
     """Check if recorder is active (HLS generator)."""
