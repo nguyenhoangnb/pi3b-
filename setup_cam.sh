@@ -1,23 +1,35 @@
 #!/bin/bash
+#------------------------------------------------------------
+# create_my_camera_rule.sh
+# Tự động tạo udev rule để map camera USB cố định thành /dev/my_camera
+#------------------------------------------------------------
 
-VENDOR="1902"
-PRODUCT="0327"
+VENDOR_ID="1902"
+PRODUCT_ID="0327"
 SYMLINK_NAME="my_camera"
+RULES_FILE="/etc/udev/rules.d/99-usb-${SYMLINK_NAME}.rules"
 
-# Tìm device video USB đúng Vendor/Product
-VIDEO_DEV=$(for dev in /dev/video*; do
-    if udevadm info -q property -n "$dev" | grep -q "ID_VENDOR_ID=$VENDOR" && \
-       udevadm info -q property -n "$dev" | grep -q "ID_MODEL_ID=$PRODUCT"; then
-        echo "$dev"
-        break
-    fi
-done)
+echo "🔧 Đang tạo udev rule cho camera..."
+echo "   Vendor ID : $VENDOR_ID"
+echo "   Product ID: $PRODUCT_ID"
+echo "   Symlink    : /dev/$SYMLINK_NAME"
+echo "   Rule file  : $RULES_FILE"
 
-if [ -z "$VIDEO_DEV" ]; then
-    echo "❌ Không tìm thấy camera với VendorID=$VENDOR ProductID=$PRODUCT"
-    exit 1
-fi
+# Nội dung rule
+RULE="SUBSYSTEM==\"video4linux\", ATTRS{idVendor}==\"$VENDOR_ID\", ATTRS{idProduct}==\"$PRODUCT_ID\", SYMLINK+=\"$SYMLINK_NAME\", MODE=\"0666\""
 
-# Tạo symlink
-sudo ln -sf "$VIDEO_DEV" "/dev/$SYMLINK_NAME"
-echo "✅ /dev/$SYMLINK_NAME → $VIDEO_DEV đã được tạo"
+# Tạo file rule
+echo "$RULE" | sudo tee "$RULES_FILE" > /dev/null
+
+# Reload udev
+echo "♻️  Reload udev rules..."
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+
+# Kiểm tra lại
+echo "✅ Đã tạo udev rule:"
+echo "------------------------------------------------------"
+cat "$RULES_FILE"
+echo "------------------------------------------------------"
+echo "🎯 Kiểm tra sau khi cắm lại camera:"
+echo "   ls -l /dev/$SYMLINK_NAME"
