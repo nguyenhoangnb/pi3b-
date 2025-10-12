@@ -11,18 +11,78 @@ HLS_DIR = Path("/tmp/picam_hls/")
 HLS_DIR.mkdir(parents=True, exist_ok=True)
 
 import subprocess
-def _mjpeg_from_hls():
-    cmd = ["ffmpeg","-hide_banner","-loglevel","error","-re","-i", str(HLS_DIR/"live.m3u8"),
-           "-f","mpjpeg","-q:v","7","-pix_fmt","yuvj422p","-boundary_tag","frame","-"]
-    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0)
-    try:
-        while True:
-            chunk = p.stdout.read(4096)
-            if not chunk: break
-            yield chunk
-    finally:
-        try: p.kill()
-        except: pass
+import threading
+import queue
+
+class MjpegStreamer:
+    def __init__(self):
+        self.process = None
+        self.queue = queue.Queue(maxsize=10)  # Buffer nhỏ để tránh memory leak
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.lock = threading.Lock()  # Để thread-safe start/stop
+
+    def start(self):
+        with self.lock:
+            if self.thread and self.thread.is_alive():
+                print("⚠️ Streamer đang chạy!")
+                return
+            self.stop_event.clear()
+            self.thread = threading.Thread(target=self._run_ffmpeg, daemon=True)
+            self.thread.start()
+            print("🚀 MJPEG streamer started in background thread")
+
+    def _run_ffmpeg(self):
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-i", str(HLS_DIR / "live.m3u8"),
+            "-f", "mpjpeg", "-q:v", "7", "-pix_fmt", "yuvj422p", "-boundary_tag", "frame", "-"
+        ]
+        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0, stderr=subprocess.DEVNULL)
+        try:
+            while not self.stop_event.is_set():
+                chunk = self.process.stdout.read(4096)
+                if not chunk:
+                    if self.process.poll() is not None:  # Process ended
+                        print("⚠️ FFmpeg process ended, restarting...")
+                        # Restart tự động
+                        time.sleep(1)
+                        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=0, stderr=subprocess.DEVNULL)
+                        continue
+                    continue
+                try:
+                    self.queue.put_nowait(chunk)  # Non-blocking put
+                except queue.Full:
+                    print("⚠️ Queue full, dropping chunk")  # Drop nếu buffer đầy
+        finally:
+            if self.process:
+                try:
+                    self.process.kill()
+                except:
+                    pass
+
+    def _mjpeg_from_hls(self):
+        """Generator yield chunks từ queue (non-blocking)"""
+        while not self.stop_event.is_set():
+            try:
+                chunk = self.queue.get(timeout=1)  # Timeout để check stop
+                self.queue.task_done()
+                yield chunk
+            except queue.Empty:
+                if self.process and self.process.poll() is not None:
+                    print("⚠️ No data, process dead → restart if needed")
+                    break
+                continue  # Tiếp tục poll
+
+    def stop(self):
+        with self.lock:
+            self.stop_event.set()
+            if self.thread:
+                self.thread.join(timeout=2)
+            if self.process:
+                self.process.kill()
+
+# Singleton instance
+streamer = MjpegStreamer()
 
 def _ensure_recorder_running() -> bool:
     """Check if recorder is active (HLS generator)."""
@@ -86,6 +146,14 @@ def live_mjpeg():
     if not _wait_for_hls_ready(2.0):
         return Response("HLS not ready.", status=503)
 
+    # Start streamer nếu chưa chạy
+    streamer.start()
+
     print("📹 Streaming MJPEG from HLS ...")
-    gen = _mjpeg_from_hls()
+    gen = streamer._mjpeg_from_hls()
     return Response(gen, mimetype="multipart/x-mixed-replace; boundary=frame")
+
+# Để stop khi app shutdown (thêm vào app context nếu cần)
+# @bp.teardown_appcontext
+# def teardown(exception):
+#     streamer.stop()
