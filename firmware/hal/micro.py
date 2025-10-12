@@ -14,32 +14,32 @@ class Micro:
         self.recording = None
 
     def get_first_available_device(self):
-        """Trả về thiết bị micro khả dụng đầu tiên (index, name) hoặc None nếu không có."""
+        """Trả về tên thiết bị dạng 'hw:X,Y' nếu có."""
         devices = sd.query_devices()
-        input_devices = [(i, d["name"]) for i, d in enumerate(devices) if d["max_input_channels"] > 0]
+        input_devices = [
+            (i, d["name"]) for i, d in enumerate(devices) if d["max_input_channels"] > 0
+        ]
 
         if not input_devices:
-            print("❌ Không tìm thấy thiết bị micro nào trong hệ thống.")
+            print("❌ Không tìm thấy thiết bị micro nào.")
             return None
 
         print("🎧 Các thiết bị micro khả dụng:")
         for i, name in input_devices:
             print(f"  [{i}] {name}")
 
-        # Nếu người dùng chỉ định thiết bị — kiểm tra tồn tại
-        if self.device is not None:
-            for i, name in input_devices:
-                if (isinstance(self.device, int) and i == self.device) or \
-                   (isinstance(self.device, str) and self.device.lower() in name.lower()):
-                    print(f"✅ Sử dụng thiết bị micro: [{i}] {name}")
-                    return (i, name)
-            print(f"⚠️ Không tìm thấy thiết bị '{self.device}', chuyển sang mặc định.")
+        # Lấy thiết bị đầu tiên
+        index, name = input_devices[0]
+        # Trích xuất chuỗi 'hw:X,Y' nếu có trong name
+        if "hw:" in name:
+            hw_name = name.split("hw:")[-1].split(")")[0]
+            device_str = f"hw:{hw_name}"
+        else:
+            device_str = f"hw:{index},0"
 
-        # Nếu không chỉ định hoặc không tìm thấy -> chọn thiết bị đầu tiên
-        first_dev = input_devices[0]
-        print(f"✅ Sử dụng thiết bị mặc định: [{first_dev[0]}] {first_dev[1]}")
-        self.device = first_dev[0]
-        return first_dev
+        print(f"✅ Sử dụng thiết bị micro: [{index}] {name} ({device_str})")
+        self.device = device_str
+        return device_str
 
     def record(self, duration=5):
         """Ghi âm trong N giây từ thiết bị khả dụng."""

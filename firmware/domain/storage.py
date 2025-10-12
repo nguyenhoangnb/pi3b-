@@ -102,8 +102,6 @@ class PiStreamer:
             if self.config['capabilities'].get('audio', False):
                 self.micro = Micro()
                 if self.micro.get_first_available_device():
-                    self.audio_dev = self.micro.get_first_available_device()
-                else:
                     self.audio_dev = self.config['audio']['device']
                 self.audio_rate = self.config['audio'].get('sample_rate', 48000)
                 self.audio_channels = self.config['audio'].get('channels', 1)
@@ -201,7 +199,7 @@ class PiStreamer:
         if self.micro.get_first_available_device():  # nếu có audio_dev
             cmd += [
                 "-f", "alsa",
-                "-ac", "1",
+                "-ac", self.audio_channels,
                 "-i", self.audio_dev,
                 "-c:a", "aac",
                 "-b:a", "128k",
@@ -222,13 +220,11 @@ class PiStreamer:
         # --- Mapping and output ---
         cmd += map_args + [
             "-f", "tee",
-            (
-                f"[f=segment:strftime=1:segment_time={self.segment_seconds}:reset_timestamps=1]"
-                f"'{record_dir}/%Y%m%d_%H%M%S_cam0.mp4'|"
-                f"[f=hls:hls_time=4:hls_list_size=5:hls_flags=delete_segments]{hls_path}"
-            ),
+            f"[f=segment:strftime=1:segment_time={self.segment_seconds}:reset_timestamps=1]"
+            f"'{record_dir}/%Y%m%d_%H%M%S_cam0.mp4'|"
+            f"[f=hls:hls_time=4:hls_list_size=5:hls_flags=delete_segments]{hls_path}"
         ]
-
+        print(cmd)
         return cmd
 
     def start(self):
