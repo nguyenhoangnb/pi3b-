@@ -15,7 +15,6 @@ def _mjpeg_from_hls():
     """Convert HLS (.m3u8) to MJPEG stream with auto-reconnect"""
     max_retries = 10
     retry_count = 0
-    HLS_DIR = Path(HLS_DIR) if 'HLS_DIR' in globals() else Path('.')  # Fallback nếu chưa định nghĩa
 
     while retry_count < max_retries:
         process = None
