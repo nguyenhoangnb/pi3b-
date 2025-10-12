@@ -190,7 +190,7 @@ class PiStreamer:
             "ffmpeg",
             "-hide_banner", "-loglevel", "error",
             "-f", "v4l2",
-            "-framerate", "25",
+            "-framerate", "15",
             "-video_size", "640x480",
             "-i", self.video_dev,
         ]
