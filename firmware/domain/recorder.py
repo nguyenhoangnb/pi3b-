@@ -339,34 +339,24 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 if __name__ == "__main__":
-    # Đăng ký handler cho SIGINT và SIGTERM
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     try:
-        # Khởi tạo recorder
         recorder = PiStreamer()
         if not recorder.initial():
             print("❌ Khởi tạo thất bại, đang thoát...")
             sys.exit(1)
 
-        # Menu điều khiển đơn giản
+        recorder.start()  # 🔹 chỉ chạy 1 lần
+        print("📡 Đang stream... Nhấn Ctrl+C để dừng.")
+
         while True:
+            time.sleep(1)  # Giữ chương trình chạy, không tạo thêm tiến trình mới
 
-            try:
-                
-      
-                recorder.start()
-               
-            
-            except KeyboardInterrupt:
-                print("\n🛑 Đang thoát...")
-                recorder.cleanup()
-                break
-            except Exception as e:
-                print(f"❌ Lỗi: {e}")
-                continue
-
+    except KeyboardInterrupt:
+        print("\n🛑 Đang thoát...")
+        recorder.cleanup()
     except Exception as e:
         print(f"❌ Lỗi chương trình: {e}")
         sys.exit(1)
