@@ -13,45 +13,47 @@ class Micro:
         self.channels = 1
         self.recording = None
 
-    def check_device_available(self) -> bool:
-        """Kiểm tra xem có ít nhất một thiết bị micro khả dụng hay không."""
+    def get_first_available_device(self):
+        """Trả về thiết bị micro khả dụng đầu tiên (index, name) hoặc None nếu không có."""
         devices = sd.query_devices()
-        input_devices = [
-            (i, d["name"]) for i, d in enumerate(devices) if d["max_input_channels"] > 0
-        ]
+        input_devices = [(i, d["name"]) for i, d in enumerate(devices) if d["max_input_channels"] > 0]
 
         if not input_devices:
             print("❌ Không tìm thấy thiết bị micro nào trong hệ thống.")
-            return False
+            return None
 
         print("🎧 Các thiết bị micro khả dụng:")
         for i, name in input_devices:
             print(f"  [{i}] {name}")
 
-        # Nếu có định nghĩa self.device thì kiểm tra cụ thể
+        # Nếu người dùng chỉ định thiết bị — kiểm tra tồn tại
         if self.device is not None:
             for i, name in input_devices:
                 if (isinstance(self.device, int) and i == self.device) or \
                    (isinstance(self.device, str) and self.device.lower() in name.lower()):
-                    print(f"✅ Thiết bị micro '{name}' khả dụng.")
-                    return True
-            print(f"⚠️ Không tìm thấy thiết bị '{self.device}', sẽ dùng mặc định.")
-        else:
-            print("ℹ️ Không chỉ định thiết bị, sẽ dùng thiết bị mặc định đầu tiên.")
+                    print(f"✅ Sử dụng thiết bị micro: [{i}] {name}")
+                    return (i, name)
+            print(f"⚠️ Không tìm thấy thiết bị '{self.device}', chuyển sang mặc định.")
 
-        return True
+        # Nếu không chỉ định hoặc không tìm thấy -> chọn thiết bị đầu tiên
+        first_dev = input_devices[0]
+        print(f"✅ Sử dụng thiết bị mặc định: [{first_dev[0]}] {first_dev[1]}")
+        self.device = first_dev[0]
+        return first_dev
 
     def record(self, duration=5):
-        """Ghi âm trong N giây."""
-        if not self.check_device_available():
+        """Ghi âm trong N giây từ thiết bị khả dụng."""
+        dev = self.get_first_available_device()
+        if dev is None:
             raise RuntimeError("Không có thiết bị micro khả dụng.")
-        print(f"🎤 Đang ghi âm {duration}s từ thiết bị {self.device or 'default'}...")
+
+        print(f"🎤 Đang ghi âm {duration}s từ thiết bị {dev[1]}...")
         self.recording = sd.rec(
             int(duration * self.sample_rate),
             samplerate=self.sample_rate,
             channels=self.channels,
             dtype="int16",
-            device=self.device
+            device=dev[0]
         )
         sd.wait()
         print("✅ Hoàn tất ghi âm.")
@@ -69,8 +71,8 @@ class Micro:
             wf.writeframes(self.recording.tobytes())
         print("✅ Lưu thành công.")
 
+
 if __name__ == "__main__":
-    mic = Micro()
-    mic.check_device_available()
-    mic.record()
-    mic.save()
+    mic = Micro()  # không cần truyền device, tự chọn thiết bị đầu tiên
+    mic.record(3)
+    mic.save("test.wav")

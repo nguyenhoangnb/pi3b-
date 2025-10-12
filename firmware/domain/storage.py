@@ -13,6 +13,7 @@ from firmware.hal.usb_manager import USBManager
 from firmware.hal.gpio_leds import gpioLed
 from firmware.hal.gnss import GNSSModule
 from firmware.hal.rtc import rtcModule
+from firmware.hal.micro import Micro
 from firmware.config.config_loader import load
 class PiStreamer:
     def __init__(self,
@@ -30,15 +31,17 @@ class PiStreamer:
         self.ffmpeg_process = None
         self.config_file = Path(__file__).parent.parent / 'config' / 'device_full.yaml'
         self.config = load(self.config_file)
-        self.initial()
         # Khởi tạo LED với GPIO pin từ config
         self.led_control = gpioLed(self.config['gpio'].get('record_led', 26))
         self.led_thread = None
         self.led_running = False
         
+        self.initial()
         self.overlay_file = "/tmp/overlay.txt"
         self._stop_flag = False
         self._overlay_thread = None
+
+        self.micro = None
         # Khởi tạo RTC module
         try:
             self.rtc = rtcModule()
@@ -97,7 +100,11 @@ class PiStreamer:
 
             # Cấu hình audio nếu được bật
             if self.config['capabilities'].get('audio', False):
-                self.audio_dev = self.config['audio']['device']
+                self.micro = Micro()
+                if self.micro.get_first_available_device():
+                    self.audio_dev = self.micro.get_first_available_device()
+                else:
+                    self.audio_dev = self.config['audio']['device']
                 self.audio_rate = self.config['audio'].get('sample_rate', 48000)
                 self.audio_channels = self.config['audio'].get('channels', 1)
             
@@ -163,15 +170,13 @@ class PiStreamer:
                 f.write(f"{timestamp}\n{gps_info}")
             time.sleep(1)
     def _build_ffmpeg_cmd(self):
-        """Tạo lệnh FFmpeg lưu file YYYYMMDD_HHMMSS_cam0.mp4 + overlay timestamp + GPS"""
-        hls_path = os.path.join(self.hls_dir, "live.m3u8")
+        """Tạo lệnh FFmpeg với hoặc không có audio."""
+        hls_path = os.path.join(self.hls_dir, "stream.m3u8")
 
-        # 🔹 Tên file theo thời gian, không tạo thư mục con
-        filename = datetime.now().strftime("%Y%m%d_%H%M%S") + "_cam0.mp4"
-        record_path = os.path.join(self.output_dir, filename)
-        os.makedirs(self.output_dir, exist_ok=True)
-
-        # 🔹 Overlay text (đọc từ /tmp/overlay.txt nếu có thread cập nhật)
+        # Tạo thư mục lưu segment theo thời gian
+        session_dir = datetime.now().strftime("session_%Y%m%d_%H%M%S")
+        record_dir = os.path.join(self.output_dir, session_dir)
+        os.makedirs(record_dir, exist_ok=True)
         display_text = (
             "drawtext=textfile=/tmp/overlay.txt:reload=1"
             ":fontcolor=white"
@@ -182,28 +187,49 @@ class PiStreamer:
             ":y=10"
             ":line_spacing=5"
         )
-
+        # Base command (video part)
         cmd = [
             "ffmpeg",
             "-hide_banner", "-loglevel", "error",
-            "-f", "v4l2", "-framerate", "25", "-video_size", "640x480",
+            "-f", "v4l2",
+            "-framerate", "25",
+            "-video_size", "640x480",
             "-i", self.video_dev,
-            "-f", "alsa", "-i", self.audio_dev,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        ]
+
+        # --- Optional audio part ---
+        if self.micro.get_first_available_device():  # nếu có audio_dev
+            cmd += [
+                "-f", "alsa",
+                "-ac", "1",
+                "-i", self.audio_dev,
+                "-c:a", "aac",
+                "-b:a", "128k",
+            ]
+            map_args = ["-map", "0:v", "-map", "1:a"]
+        else:
+            print("⚠️ Không có thiết bị audio, sẽ chỉ ghi hình (không có tiếng).")
+            map_args = ["-map", "0:v"]
+
+        # --- Video encoding ---
+        cmd += [
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
             "-vf", display_text,
-            "-c:a", "aac", "-b:a", "128k",
-            "-map", "0:v", "-map", "1:a",
+        ]
+
+        # --- Mapping and output ---
+        cmd += map_args + [
             "-f", "tee",
             (
                 f"[f=segment:strftime=1:segment_time={self.segment_seconds}:reset_timestamps=1]"
-                f"'{self.output_dir}/%Y%m%d_%H%M%S_cam0.mp4'|"
+                f"'{record_dir}/%Y%m%d_%H%M%S_cam0.mp4'|"
                 f"[f=hls:hls_time=4:hls_list_size=5:hls_flags=delete_segments]{hls_path}"
-            )
+            ),
         ]
 
         return cmd
-
-
 
     def start(self):
         if self.ffmpeg_process and self.ffmpeg_process.poll() is None:
