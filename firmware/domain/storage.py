@@ -200,7 +200,7 @@ class PiStreamer:
             cmd += [
                 "-f", "alsa",
                 "-ar", str(self.audio_rate),
-                "-ac", str(self.audio_channels),
+                "-ac", "1",
                 "-i", self.audio_dev,
                 "-c:a", "aac",
                 "-b:a", "128k",
