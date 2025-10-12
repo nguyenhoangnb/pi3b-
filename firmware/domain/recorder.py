@@ -169,7 +169,7 @@ class PiStreamer:
             time.sleep(1)
     def _build_ffmpeg_cmd(self):
         """Tạo lệnh FFmpeg với hoặc không có audio."""
-        hls_path = os.path.join(self.hls_dir, "stream.m3u8")
+        hls_path = os.path.join(self.hls_dir, "live.m3u8")
 
         # Tạo thư mục lưu segment theo thời gian
         session_dir = datetime.now().strftime("session_%Y%m%d_%H%M%S")
