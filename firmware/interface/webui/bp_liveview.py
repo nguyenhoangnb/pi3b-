@@ -15,8 +15,10 @@ def _mjpeg_from_hls():
     """Convert HLS (.m3u8) to MJPEG stream with auto-reconnect"""
     max_retries = 10
     retry_count = 0
+    HLS_DIR = Path(HLS_DIR) if 'HLS_DIR' in globals() else Path('.')  # Fallback nếu chưa định nghĩa
 
     while retry_count < max_retries:
+        process = None
         try:
             process = (
                 ffmpeg
@@ -72,16 +74,16 @@ def _mjpeg_from_hls():
             if retry_count < max_retries:
                 print(f"🔄 Retry {retry_count}/{max_retries}")
                 time.sleep(1)
-                continue
             else:
                 print("❌ Max retries reached, stopping stream")
                 break
         finally:
-            try:
-                process.kill()
-                process.wait(timeout=1)
-            except:
-                pass
+            if process is not None:
+                try:
+                    process.kill()
+                    process.wait(timeout=1)
+                except:
+                    pass
 
 
 def _ensure_recorder_running() -> bool:
