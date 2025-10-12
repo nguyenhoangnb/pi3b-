@@ -17,8 +17,8 @@ webui:
   host: "0.0.0.0"
   port: 8080
 paths:
-  record_root: /media/ssd
-  log_dir: /media/ssd
+  record_root: /media/hoang/UBUNTU 22_0
+  log_dir: /media/hoang/UBUNTU 22_0
 storage:
   min_free_gb: 1.0
   segment_seconds: 600
@@ -29,9 +29,9 @@ video:
   v4l2_format: "640x480"
   v4l2_fps: 30
 audio:
-  device: "plughw:1,0"  # USB Audio Device (card 1) - use hw instead of plughw
+  device: "plughw:0,6"  # USB Audio Device (card 1) - use hw instead of plughw
   sample_rate: 48000
-  channels: 1
+  channels: 2
 overlay:
   timestamp_font: "/usr/share/fonts/Truetype/dejavu/DejaVuSansMono.ttf"
   timestamp_size: 24

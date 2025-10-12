@@ -252,7 +252,6 @@ class PiStreamer:
         print(f"🚀 Bắt đầu ghi và stream (mỗi {self.segment_seconds}s lưu 1 file)...")
         print("   ↳ Lưu tại:", self.output_dir)
         print("   ↳ HLS tại:", self.hls_dir)
-        print("   ↳ URL: http://<ip-pi>:8080/hls/stream.m3u8")
 
         self.ffmpeg_process = subprocess.Popen(cmd)
         time.sleep(2)
