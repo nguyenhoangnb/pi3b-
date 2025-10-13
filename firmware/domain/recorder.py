@@ -111,6 +111,7 @@ class PiStreamer:
                 self.micro = Micro()
                 if self.micro.get_first_available_device():
                     self.audio_dev = self.config['audio']['device']
+                print("Audio", self.audio_dev)
                 self.audio_rate = self.config['audio'].get('sample_rate', 48000)
                 self.audio_channels = self.config['audio'].get('channels', 1)
             
