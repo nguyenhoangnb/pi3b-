@@ -308,37 +308,59 @@ class PiStreamer:
         else:
             print("⚠️ Không có tiến trình FFmpeg đang chạy.")
     def cleanup(self):
-        if self.ffmpeg_process and self.ffmpeg_process.poll() is None:
-            print("🛑 Dừng FFmpeg...")
-            self.ffmpeg_process.send_signal(signal.SIGINT)
-            try:
-                self.ffmpeg_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.ffmpeg_process.kill()
-        self._stop_flag = True
-        if self._overlay_thread:
-            self._overlay_thread.join(timeout=2)
-        # Tắt LED
-        if hasattr(self, 'led_control'):
-            self.led_control.off()
+        """
+        Dừng an toàn FFmpeg, overlay thread, các module phần cứng (LED, GNSS, RTC),
+        tránh crash camera trên Raspberry Pi.
+        """
+        print("🧹 Bắt đầu cleanup...")
 
-        # Đóng GNSS module
-        if hasattr(self, 'gnss') and self.gnss_available:
+        # 1️⃣ Dừng overlay thread trước (nếu có)
+        self._stop_flag = True
+        if hasattr(self, "_overlay_thread") and self._overlay_thread:
+            print("⏱ Dừng overlay thread...")
+            self._overlay_thread.join(timeout=5)
+            if self._overlay_thread.is_alive():
+                print("⚠️ Overlay thread vẫn đang chạy sau 5 giây timeout.")
+
+        # 2️⃣ Dừng FFmpeg an toàn
+        if hasattr(self, "ffmpeg_process") and self.ffmpeg_process and self.ffmpeg_process.poll() is None:
+            print("🛑 Dừng FFmpeg...")
+            try:
+                # gửi SIGINT để FFmpeg flush buffer và release camera/audio
+                self.ffmpeg_process.send_signal(signal.SIGINT)
+                self.ffmpeg_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                print("⚠️ FFmpeg không phản hồi, kill đột ngột...")
+                self.ffmpeg_process.kill()
+                self.ffmpeg_process.wait()
+            print(f"✅ FFmpeg đã dừng, returncode={self.ffmpeg_process.returncode}")
+
+        # 3️⃣ Tắt LED (nếu có)
+        if hasattr(self, 'led_control'):
+            try:
+                self.led_control.off()
+                print("💡 LED đã tắt")
+            except Exception as e:
+                print(f"⚠️ Lỗi khi tắt LED: {e}")
+
+        # 4️⃣ Đóng GNSS module (nếu có)
+        if hasattr(self, 'gnss') and getattr(self, 'gnss_available', False):
             try:
                 self.gnss.close()
-                print("✅ Đã đóng GNSS module")
+                print("📡 GNSS module đã đóng")
             except Exception as e:
                 print(f"⚠️ Lỗi khi đóng GNSS: {e}")
 
-        # Đóng RTC module
-        if hasattr(self, 'rtc') and self.rtc_available:
+        # 5️⃣ Đóng RTC module (nếu có)
+        if hasattr(self, 'rtc') and getattr(self, 'rtc_available', False):
             try:
                 self.rtc.close()
-                print("✅ Đã đóng RTC module")
+                print("⏰ RTC module đã đóng")
             except Exception as e:
                 print(f"⚠️ Lỗi khi đóng RTC: {e}")
 
-        print("✅ Đã dừng và dọn dẹp xong.")
+        print("✅ Cleanup hoàn tất, tất cả module đã dừng an toàn.")
+
 
 def signal_handler(signum, frame):
     """Xử lý tín hiệu để thoát an toàn"""
