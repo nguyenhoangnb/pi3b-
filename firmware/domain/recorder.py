@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
+import cv2
 from firmware.hal.usb_manager import USBManager    
 from firmware.hal.gpio_leds import gpioLed
 from firmware.hal.gnss import GNSSModule
@@ -23,6 +23,7 @@ class PiStreamer:
                  hls_dir="/tmp/picam_hls",
                  segment_seconds=600,
                  led_pin=26):  # thêm tham số LED pin
+        self.list_video = ["/dev/video0", "/dev/video1"]
         self.video_dev = video_dev
         self.audio_dev = audio_dev
         self.output_dir = output_dir
@@ -64,6 +65,13 @@ class PiStreamer:
             print(f"⚠️ Không thể khởi tạo GNSS: {e}")
             self.gnss_available = False
 
+    def check_liscam(self):
+        for cam in range(2):
+            cap = cv2.VideoCapture(cam)
+            if cap.isOpened():
+                cap.release()
+                return f"/dev/video{cam}"
+            
     def initial(self):
         """Khởi tạo các thông số từ file cấu hình"""
         try:
@@ -94,7 +102,7 @@ class PiStreamer:
             print("✅ USB Storage sẵn sàng")
             
             # Cấu hình video
-            self.video_dev = self.config['video']['v4l2_device']
+            self.video_dev = self.check_liscam()
             self.video_size = self.config['video']['v4l2_format']
             self.video_fps = self.config['video']['v4l2_fps']
 
