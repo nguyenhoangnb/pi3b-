@@ -47,7 +47,7 @@ wifi:
   ssid: "PICAM"
   psk: "0123456789"
   iface: "wlan0"
-  idle_seconds: 600
+  idle_seconds: 30
   connect_timeout: 60
 lte:
   enabled: True
