@@ -10,6 +10,8 @@ for cam in range(2):
     camera = cv2.VideoCapture(cam)
     if not camera.isOpened():
         continue
+    else:
+        break
 
 # Kiểm tra xem camera mở được không
 if not camera.isOpened():
