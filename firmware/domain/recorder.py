@@ -7,8 +7,6 @@ from datetime import datetime
 import threading
 from pathlib import Path
 import sys
-import queue
-import tempfile
 import pyaudio  # Thêm import PyAudio cho audio capture
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import cv2
@@ -28,7 +26,7 @@ class PiStreamer:
                  segment_seconds=600,
                  led_pin=26):  # thêm tham số LED pin
         self.list_video = ["/dev/video0", "/dev/video1"]
-        self.video_dev = video_dev
+        self.video_dev = video_dev  # Sẽ được override bằng index int
         self.audio_dev = audio_dev
         self.output_dir = output_dir
         self.hls_dir = hls_dir
@@ -41,12 +39,7 @@ class PiStreamer:
         self.led_thread = None
         self.led_running = False
         
-        self.initial()
-        self._stop_flag = False
-        self._overlay_thread = None  # Giữ nhưng sẽ không dùng file nữa
-
-        self.micro = None
-        # Khởi tạo RTC module
+        # Khởi tạo RTC module trước initial
         try:
             self.rtc = rtcModule()
             self.rtc_available = True
@@ -55,7 +48,7 @@ class PiStreamer:
             print(f"⚠️ Không thể khởi tạo RTC: {e}")
             self.rtc_available = False
 
-        # Khởi tạo GNSS module
+        # Khởi tạo GNSS module trước initial
         try:
             if self.config['capabilities'].get('gnss', False):
                 self.gnss = GNSSModule()
@@ -68,6 +61,10 @@ class PiStreamer:
             print(f"⚠️ Không thể khởi tạo GNSS: {e}")
             self.gnss_available = False
 
+        self._stop_flag = False
+        self._overlay_thread = None  # Giữ nhưng sẽ không dùng file nữa
+
+        self.micro = None
         # Threads cho streaming mới (OpenCV + PyAudio + FFmpeg mux)
         self.video_thread = None
         self.audio_thread = None
@@ -76,12 +73,15 @@ class PiStreamer:
         self.audio_pipe = None
 
     def check_liscam(self):
-        for cam in range(2):
-            cap = cv2.VideoCapture(cam)
+        """Tìm index camera hoạt động bằng cách thử các index từ 0 đến 9"""
+        for cam in range(10):  # Thử lên đến /dev/video9
+            cap = cv2.VideoCapture(cam, cv2.CAP_V4L2)
             if cap.isOpened():
                 cap.release()
-                return f"/dev/video{cam}"
-        return "/dev/video0"  # Fallback
+                print(f"✅ Tìm thấy camera tại index {cam}")
+                return cam
+        print("❌ Không tìm thấy camera nào hoạt động!")
+        return 0  # Fallback, nhưng sẽ fail sau
 
     def initial(self):
         """Khởi tạo các thông số từ file cấu hình"""
@@ -112,16 +112,25 @@ class PiStreamer:
             
             print("✅ USB Storage sẵn sàng")
             
-            # Cấu hình video
-            self.video_dev = self.check_liscam()
-            self.video_size = self.config['video']['v4l2_format']
+            # Cấu hình video - sử dụng index thay vì path
+            self.video_index = self.check_liscam()  # Lưu index int
+            self.video_size = self.config['video']['v4l2_format']  # e.g., '640x480'
             self.video_fps = self.config['video']['v4l2_fps']
+            width, height = map(int, self.video_size.split('x'))
+            self.video_width = width
+            self.video_height = height
 
             # Cấu hình audio nếu được bật
             if self.config['capabilities'].get('audio', False):
                 self.micro = Micro()
-                if self.micro.get_first_available_device():
-                    self.audio_dev = self.config['audio']['device']
+                device_index_raw = self.micro.get_first_available_device()
+                if device_index_raw:
+                    # Giả sử returns str or int, convert to int
+                    self.audio_device_index = int(device_index_raw) if isinstance(device_index_raw, str) else device_index_raw
+                    self.audio_dev = self.config['audio']['device']  # Giữ config cho log
+                else:
+                    self.audio_device_index = None
+                    print("⚠️ Không tìm thấy thiết bị audio.")
                 print("Audio", self.audio_dev)
                 self.audio_rate = self.config['audio'].get('sample_rate', 48000)
                 self.audio_channels = self.config['audio'].get('channels', 1)
@@ -135,9 +144,9 @@ class PiStreamer:
             os.makedirs(self.hls_dir, exist_ok=True)
             
             print("✅ Đã khởi tạo cấu hình:")
-            print(f"   ↳ Video: {self.video_dev} ({self.video_size} @ {self.video_fps}fps)")
-            if hasattr(self, 'audio_dev') and self.micro.get_first_available_device():
-                print(f"   ↳ Audio: {self.audio_dev} ({self.audio_channels}ch @ {self.audio_rate}Hz)")
+            print(f"   ↳ Video: index {self.video_index} ({self.video_size} @ {self.video_fps}fps)")
+            if hasattr(self, 'audio_dev') and self.audio_device_index is not None:
+                print(f"   ↳ Audio: {self.audio_dev} (index {self.audio_device_index}, {self.audio_channels}ch @ {self.audio_rate}Hz)")
             else:
                 print("   ↳ Audio: Không có thiết bị audio")
             print(f"   ↳ Storage: {self.output_dir}")
@@ -188,24 +197,21 @@ class PiStreamer:
         gps_info = self._get_gps_info() or "GPS: Waiting for signal"
         return f"{timestamp}\n{gps_info}"
 
-    # Bỏ _update_overlay_file vì dùng direct text trong OpenCV
-
     def _build_mux_cmd(self):
         """Tạo lệnh FFmpeg mux từ pipes (raw video + audio)"""
         hls_path = os.path.join(self.hls_dir, "live.m3u8")
-        video_size = "640x480"  # Hardcode cho đơn giản, có thể lấy từ config
         cmd = [
             "ffmpeg",
             "-hide_banner", "-loglevel", "error",
             "-f", "rawvideo",
             "-pixel_format", "bgr24",  # OpenCV default
-            "-video_size", video_size,
+            "-video_size", self.video_size,
             "-framerate", str(self.video_fps),
             "-i", self.video_pipe,  # Raw video pipe
         ]
 
         # Optional audio part
-        if self.micro and self.micro.get_first_available_device():
+        if self.micro and hasattr(self, 'audio_device_index') and self.audio_device_index is not None:
             cmd += [
                 "-f", "s16le",  # Raw audio format từ PyAudio
                 "-ar", str(self.audio_rate),
@@ -226,20 +232,19 @@ class PiStreamer:
             "-crf", "23",
         ]
 
-        # Mapping and output
-        cmd += map_args + [
-            "-f", "tee",
-            f"[f=segment:strftime=1:segment_time={self.segment_seconds}:reset_timestamps=1]",
-            f"'{self.output_dir}/%Y%m%d_%H%M%S_cam0.mp4'|[f=hls:hls_time=4:hls_list_size=5:hls_flags=delete_segments]{hls_path}"
-        ]
+        # Mapping and output - Fix tee quoting
+        segment_output = f"[f=segment:strftime=1:segment_time={self.segment_seconds}:reset_timestamps=1]'{self.output_dir}/%Y%m%d_%H%M%S_cam0.mp4'"
+        hls_output = f"[f=hls:hls_time=4:hls_list_size=5:hls_flags=delete_segments]{hls_path}"
+        outputs = f"{segment_output}|{hls_output}"
+        cmd += map_args + ["-f", "tee", outputs]
         print("Mux cmd:", " ".join(cmd))  # Debug
         return cmd
 
     def _video_thread_func(self):
         """Thread đọc video từ OpenCV, add overlay, write raw vào pipe"""
-        cap = cv2.VideoCapture(self.video_dev, cv2.CAP_V4L2)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap = cv2.VideoCapture(self.video_index, cv2.CAP_V4L2)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.video_width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.video_height)
         cap.set(cv2.CAP_PROP_FPS, self.video_fps)
 
         if not cap.isOpened():
@@ -273,18 +278,19 @@ class PiStreamer:
 
     def _audio_thread_func(self):
         """Thread đọc audio từ PyAudio, write raw vào pipe"""
-        if not self.micro or not self.micro.get_first_available_device():
+        if not self.micro or not hasattr(self, 'audio_device_index') or self.audio_device_index is None:
             print("⚠️ Không có audio device, bỏ qua audio thread.")
             return
 
         p = pyaudio.PyAudio()
+        stream = None
         try:
             stream = p.open(
                 format=pyaudio.paInt16,
                 channels=self.audio_channels,
                 rate=self.audio_rate,
                 input=True,
-                input_device_index=self.micro.get_first_available_device(),
+                input_device_index=self.audio_device_index,
                 frames_per_buffer=1024
             )
 
@@ -301,8 +307,9 @@ class PiStreamer:
         except Exception as e:
             print(f"❌ Audio init error: {e}")
         finally:
-            stream.stop_stream()
-            stream.close()
+            if stream:
+                stream.stop_stream()
+                stream.close()
             p.terminate()
             print("✅ Audio thread stopped.")
 
@@ -333,11 +340,12 @@ class PiStreamer:
                 return
 
         # Tạo named pipes
-        temp_dir = tempfile.gettempdir()
+        temp_dir = tempfile.gettempdir()  # Import tempfile nếu chưa
         self.video_pipe = os.path.join(temp_dir, 'video_pipe.raw')
-        self.audio_pipe = os.path.join(temp_dir, 'audio_pipe.raw')
+        self.audio_pipe = None
         os.mkfifo(self.video_pipe)
-        if self.micro and self.micro.get_first_available_device():
+        if self.micro and hasattr(self, 'audio_device_index') and self.audio_device_index is not None:
+            self.audio_pipe = os.path.join(temp_dir, 'audio_pipe.raw')
             os.mkfifo(self.audio_pipe)
 
         self._stop_flag = False
@@ -347,7 +355,7 @@ class PiStreamer:
 
         # Start threads
         self.video_thread = threading.Thread(target=self._video_thread_func, daemon=True)
-        self.audio_thread = threading.Thread(target=self._audio_thread_func, daemon=True) if self.micro and self.micro.get_first_available_device() else None
+        self.audio_thread = threading.Thread(target=self._audio_thread_func, daemon=True) if self.micro and hasattr(self, 'audio_device_index') and self.audio_device_index is not None else None
         self.mux_thread = threading.Thread(target=self._mux_thread_func, daemon=True)
 
         self.video_thread.start()
