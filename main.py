@@ -4,7 +4,12 @@ import cv2
 app = Flask(__name__)
 
 # Mở camera (0 là mặc định cho webcam / CSI / USB camera)
-camera = cv2.VideoCapture(0)
+
+camera = None
+for cam in range(2):
+    camera = cv2.VideoCapture(cam)
+    if not camera.isOpened():
+        continue
 
 # Kiểm tra xem camera mở được không
 if not camera.isOpened():
