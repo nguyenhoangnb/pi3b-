@@ -210,3 +210,99 @@ class GNSSModule:
         with self._lock:
             ts = self._data.get('timestamp')
             return ts
+
+
+def main():
+    """Test GNSS module - continuous monitoring"""
+    import sys
+    
+    print("🛰️  GNSS Module Test")
+    print("=" * 60)
+    
+    # Initialize GNSS
+    print("🔍 Searching for GNSS device...")
+    gnss = GNSSModule()
+    
+    if not gnss._serial:
+        print("❌ No GNSS device found!")
+        print("\nSearched ports:")
+        for port in gnss._find_ports():
+            print(f"  - {port}")
+        print("\nMake sure:")
+        print("  1. GNSS device is connected via USB")
+        print("  2. User has permission to access serial ports")
+        print("     Run: sudo usermod -a -G dialout $USER")
+        print("     Then logout and login again")
+        return 1
+    
+    print(f"✅ GNSS device found: {gnss._serial.port}")
+    print(f"   Baudrate: {gnss.baudrate}")
+    print(f"   Timeout: {gnss.timeout}s")
+    print("\n📡 Waiting for GPS signal...")
+    print("   (This may take a few minutes outdoors)")
+    print("\nPress Ctrl+C to stop\n")
+    print("-" * 60)
+    
+    try:
+        last_fix = 0
+        no_fix_count = 0
+        
+        while True:
+            data = gnss.get_location()
+            fix = data.get('fix_quality', 0)
+            lat = data.get('latitude')
+            lon = data.get('longitude')
+            sats = data.get('num_sats', 0)
+            hdop = data.get('hdop')
+            ts = data.get('timestamp')
+            
+            # Clear line and move cursor up
+            print("\r" + " " * 60 + "\r", end='')
+            
+            if fix > 0 and lat is not None and lon is not None:
+                # GPS Fix acquired
+                if fix != last_fix:
+                    print("\n🎯 GPS FIX ACQUIRED!")
+                    print("-" * 60)
+                
+                print(f"📍 Position:")
+                print(f"   Latitude:  {lat:>12.6f}°")
+                print(f"   Longitude: {lon:>12.6f}°")
+                print(f"   Google Maps: https://www.google.com/maps?q={lat},{lon}")
+                print(f"\n📊 Quality:")
+                print(f"   Fix Quality: {fix} ({'GPS' if fix == 1 else 'DGPS' if fix == 2 else 'Unknown'})")
+                print(f"   Satellites:  {sats}")
+                print(f"   HDOP:        {hdop if hdop else 'N/A'}")
+                print(f"   Timestamp:   {ts.strftime('%H:%M:%S UTC') if ts else 'N/A'}")
+                print("-" * 60)
+                
+                no_fix_count = 0
+            else:
+                # No fix yet
+                no_fix_count += 1
+                dots = "." * (no_fix_count % 4)
+                print(f"⏳ Searching for satellites{dots:<3} (Sats: {sats})", end='', flush=True)
+                
+                if no_fix_count % 10 == 0 and no_fix_count > 0:
+                    print(f"\n💡 Tip: Make sure GNSS antenna has clear view of the sky")
+                    print(f"   Current satellites: {sats}")
+                    if sats == 0:
+                        print(f"   ⚠️  No satellites detected - check antenna connection")
+            
+            last_fix = fix
+            time.sleep(1)
+            
+    except KeyboardInterrupt:
+        print("\n\n🛑 Stopping GNSS monitoring...")
+        gnss.close()
+        print("✅ GNSS module closed")
+        return 0
+    except Exception as e:
+        print(f"\n❌ Error: {e}")
+        gnss.close()
+        return 1
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
