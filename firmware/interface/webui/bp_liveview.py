@@ -1,13 +1,59 @@
 from __future__ import annotations
-from flask import Blueprint, Response
+from flask import Blueprint, Response, request, abort
+from werkzeug.middleware.proxy_fix import ProxyFix
 import time
 import requests
 import threading
 import queue
+from functools import wraps
+import re
 
 # ============================================================
-# CONFIG
+# CONFIG & SECURITY
 # ============================================================
+
+# Allowed IP ranges (adjust these to match your legitimate client IPs)
+ALLOWED_IPS = [
+    '127.0.0.1',      # localhost
+    '192.168.0.0/16', # typical LAN
+    '10.0.0.0/8',     # private network
+    '172.16.0.0/12'   # private network
+]
+
+def is_ip_allowed(ip: str) -> bool:
+    """Check if IP is in allowed ranges"""
+    from ipaddress import ip_address, ip_network
+    if not ip:
+        return False
+    try:
+        client_ip = ip_address(ip)
+        return any(client_ip in ip_network(allowed) for allowed in ALLOWED_IPS)
+    except ValueError:
+        return False
+
+def validate_request(f):
+    """Decorator to validate requests"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        # Get real IP even behind proxy
+        client_ip = request.remote_addr
+        
+        # Basic request validation
+        if not is_ip_allowed(client_ip):
+            abort(403, "IP not allowed")
+            
+        # Validate User-Agent
+        user_agent = request.headers.get('User-Agent', '')
+        if not user_agent or len(user_agent) < 5:
+            abort(400, "Invalid User-Agent")
+            
+        # Block suspicious patterns
+        path = request.path
+        if re.search(r'[;\'"]|\\x[0-9a-f]{2}|%[0-9a-f]{2}', path, re.I):
+            abort(400, "Invalid characters in request")
+            
+        return f(*args, **kwargs)
+    return decorated
 
 bp = Blueprint("liveview", __name__)
 
@@ -191,18 +237,28 @@ def _wait_for_recorder_ready(timeout: float = 5.0) -> bool:
 # ============================================================
 
 @bp.get("/live.mjpg")
+@validate_request
 def live_mjpeg():
     """Stream MJPEG proxy từ recorder."""
     if not _wait_for_recorder_ready():
         return Response("Recorder không sẵn sàng.", status=503)
 
     proxy._client_connected()
-    return Response(
+    response = Response(
         proxy._mjpeg_generator(),
         mimetype="multipart/x-mixed-replace; boundary=frame"
     )
+    
+    # Add security headers
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    response.headers['X-XSS-Protection'] = '1; mode=block'
+    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+    response.headers['Content-Security-Policy'] = "default-src 'self'"
+    return response
 
 @bp.get("/stream/health")
+@validate_request
 def stream_health():
     """Endpoint kiểm tra trạng thái stream."""
     health = {
@@ -211,4 +267,15 @@ def stream_health():
         "is_streaming": proxy.is_streaming,
         "recorder_url": RECORDER_MJPEG_URL
     }
-    return health, 200 if proxy.is_healthy() else 503
+    
+    response = Response(
+        response=health,
+        status=200 if proxy.is_healthy() else 503,
+        mimetype='application/json'
+    )
+    
+    # Add security headers
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Cache-Control'] = 'no-store, no-cache'
+    response.headers['X-Frame-Options'] = 'DENY'
+    return response
