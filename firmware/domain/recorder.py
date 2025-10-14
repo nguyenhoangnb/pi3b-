@@ -405,7 +405,8 @@ class PiStreamer:
         print("✅ Video/Audio thread stopped.")
 
     def start(self):
-        if hasattr(self, '_video_audio_thread') and self._video_audio_thread.is_alive():
+        # Check if thread already running
+        if hasattr(self, '_thread') and self._thread and self._thread.is_alive():
             print("⚠️ Streaming đang chạy!")
             return
 
@@ -425,14 +426,14 @@ class PiStreamer:
         print("   ↳ Lưu tại:", self.output_dir)
         print("   ↳ HLS tại:", self.hls_dir)
 
-        # Start threads
-        self._video_audio_thread = threading.Thread(target=self._video_audio_thread, daemon=True)
-        self._video_audio_thread.start()
+        # Start thread
+        self._thread = threading.Thread(target=self._video_audio_thread, daemon=True)
+        self._thread.start()
 
         time.sleep(2)  # Đợi setup
 
-        if self._video_audio_thread.is_alive():
-            print("✅ Streaming threads đã khởi động thành công.")
+        if self._thread.is_alive():
+            print("✅ Streaming thread đã khởi động thành công.")
             # Bật LED khi bắt đầu ghi
             self.led_control.on()
         else:
@@ -462,10 +463,10 @@ class PiStreamer:
 
     def stop(self):
         self._stop_flag = True
-        if hasattr(self, '_video_audio_thread'):
+        if hasattr(self, '_thread') and self._thread:
             print("⏱ Dừng video/audio thread...")
-            self._video_audio_thread.join(timeout=5)
-            if self._video_audio_thread.is_alive():
+            self._thread.join(timeout=5)
+            if self._thread.is_alive():
                 print("⚠️ Video thread vẫn đang chạy sau 5 giây timeout.")
         # Tắt LED khi dừng ghi
         self.led_control.off()
