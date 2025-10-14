@@ -2,7 +2,7 @@ from __future__ import annotations
 from flask import current_app, request
 from flask import Blueprint, render_template_string
 from pathlib import Path
-from .helpers import cfg_get, leds_status, iface_is_up, rec_is_active, disk_info, list_media, client_prefers_hls, time_info, hw_inventory
+from .helpers import cfg_get, leds_status, iface_is_up, rec_is_active, disk_info, list_media, time_info, hw_inventory
 
 bp = Blueprint("dashboard", __name__)
 
@@ -30,11 +30,6 @@ _HTML = r"""
       {% if wifi_up %}<button name="cmd" value="off" class="danger">Wi-Fi OFF</button>
       {% else %}<button name="cmd" value="on">Wi-Fi ON</button>{% endif %}
     </form>
-    <div class="links small">
-      <a href="/status">/status (JSON)</a>
-      <a href="/?force=hls">Force HLS</a>
-      <a href="/?force=mjpeg">Force MJPEG</a>
-    </div>
   </div>
 </div>
 
@@ -53,15 +48,8 @@ _HTML = r"""
 
 <div class="card">
   <h2>Live view</h2>
-  {% if prefer_hls %}
-    <video controls autoplay playsinline muted>
-      <source src="/hls/live.m3u8" type="application/vnd.apple.mpegurl">
-    </video>
-    <small>HLS (iOS/macOS). Nếu chậm, thử “Force MJPEG”.</small>
-  {% else %}
-    <img src="/live.mjpg" alt="MJPEG preview"/>
-    <small>MJPEG (~15fps; PC/Android). Nếu đang ghi, tap từ HLS; không đụng camera lần 2.</small>
-  {% endif %}
+  <img src="/live.mjpg" alt="MJPEG live stream"/>
+  <small>MJPEG stream (~{{video_fps}}fps). Thấp latency, real-time từ recorder.</small>
 </div>
 
 
@@ -147,10 +135,6 @@ def index():
     cfg = current_app.config["PICAM_CFG"]
     dev = (cfg.get("device") or {})
     
-    # Xử lý force query param để override prefer_hls
-    force = request.args.get('force', '').lower()
-    prefer_hls = client_prefers_hls() if force not in ['hls', 'mjpeg'] else (force == 'hls')
-    
     record_root_str = ((cfg.get("paths") or {}).get("record_root") or "/media/ssd/picam")
     record_root = Path(record_root_str)
     
@@ -166,9 +150,15 @@ def index():
     if record_root.exists():
         files = list_media(record_root)
     
+    # Lấy video_fps từ config
+    video_fps = cfg_get("video.fps", 15)
+    
     body = render_template_string(_HTML,
-        dev=dev, leds=leds_status(), recording=rec_is_active(), wifi_up=iface_is_up(cfg_get("wifi.iface","wlan0")),
-        prefer_hls=prefer_hls,
+        dev=dev, 
+        leds=leds_status(), 
+        recording=rec_is_active(), 
+        wifi_up=iface_is_up(cfg_get("wifi.iface","wlan0")),
+        video_fps=video_fps,
         storage=dict(path=str(record_root), mount=record_root.anchor or "/", min_free_gb=float(cfg_get("storage.min_free_gb",10)), **st),
         files=files,
         clock=time_info(),

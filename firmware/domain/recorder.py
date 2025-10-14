@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
+# recorder.py - PiStreamer with OpenCV + PyAudio + MoviePy (no direct FFmpeg subprocess, merge AVI + WAV to MP4)
 import os
-import subprocess
 import time
 import signal
 from datetime import datetime
 import threading
 from pathlib import Path
 import sys
-import pyaudio  # Thêm import PyAudio cho audio capture
+import tempfile
+import wave  # Built-in for WAV audio
+import pyaudio  # For audio capture
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import cv2
+from flask import Flask, Response  # For MJPEG stream
+from moviepy import VideoFileClip, AudioFileClip  # For merging video + audio to MP4 (pip install moviepy)
 from firmware.hal.usb_manager import USBManager    
 from firmware.hal.gpio_leds import gpioLed
 from firmware.hal.gnss import GNSSModule
@@ -19,27 +23,24 @@ from firmware.config.config_loader import load
 
 class PiStreamer:
     def __init__(self,
-                 video_dev="/dev/video0",
+                 video_dev=0,  # Index for OpenCV
                  audio_dev="hw:1,0",
                  output_dir="/media/ssd",
-                 hls_dir="/tmp/picam_hls",
-                 segment_seconds=600,
-                 led_pin=26):  # thêm tham số LED pin
-        self.list_video = ["/dev/video0", "/dev/video1"]
-        self.video_dev = video_dev  # Sẽ được override bằng index int
+                 hls_dir="/tmp/picam_hls",  # Not used
+                 segment_seconds=30,  # Short for test
+                 led_pin=26):
+        self.video_dev = video_dev
         self.audio_dev = audio_dev
         self.output_dir = output_dir
         self.hls_dir = hls_dir
         self.segment_seconds = segment_seconds
-        self.ffmpeg_process = None
         self.config_file = Path(__file__).parent.parent / 'config' / 'device_full.yaml'
         self.config = load(self.config_file)
-        # Khởi tạo LED với GPIO pin từ config
         self.led_control = gpioLed(self.config['gpio'].get('record_led', 26))
         self.led_thread = None
         self.led_running = False
         
-        # Khởi tạo RTC module trước initial
+        # Init RTC and GNSS
         try:
             self.rtc = rtcModule()
             self.rtc_available = True
@@ -48,7 +49,6 @@ class PiStreamer:
             print(f"⚠️ Không thể khởi tạo RTC: {e}")
             self.rtc_available = False
 
-        # Khởi tạo GNSS module trước initial
         try:
             if self.config['capabilities'].get('gnss', False):
                 self.gnss = GNSSModule()
@@ -62,15 +62,19 @@ class PiStreamer:
             self.gnss_available = False
 
         self._stop_flag = False
-        self._overlay_thread = None  # Giữ nhưng sẽ không dùng file nữa
-
+        self.cap = None
+        self.video_writer = None
+        self.audio_writer = None
+        self.current_segment = None
+        self.segment_start = None
+        self.audio_frames = []  # Buffer for audio frames
+        self.audio_device_index = None
         self.micro = None
-        # Threads cho streaming mới (OpenCV + PyAudio + FFmpeg mux)
-        self.video_thread = None
-        self.audio_thread = None
-        self.mux_thread = None
-        self.video_pipe = None
-        self.audio_pipe = None
+
+        # Flask app for MJPEG stream (video only for web)
+        self.app = Flask(__name__)
+        self.frame_queue = []  # Simple queue for frames (latest only to reduce lag)
+        self.frame_lock = threading.Lock()
 
     def check_liscam(self):
         """Tìm index camera hoạt động bằng cách thử các index từ 0 đến 9"""
@@ -81,7 +85,7 @@ class PiStreamer:
                 print(f"✅ Tìm thấy camera tại index {cam}")
                 return cam
         print("❌ Không tìm thấy camera nào hoạt động!")
-        return 0  # Fallback, nhưng sẽ fail sau
+        return 0  # Fallback
 
     def initial(self):
         """Khởi tạo các thông số từ file cấu hình"""
@@ -152,6 +156,7 @@ class PiStreamer:
             print(f"   ↳ Storage: {self.output_dir}")
             print(f"   ↳ Segment: {self.segment_seconds}s")
             
+            self.setup_flask_routes()
             return True
             
         except KeyError as e:
@@ -197,51 +202,84 @@ class PiStreamer:
         gps_info = self._get_gps_info() or "GPS: Waiting for signal"
         return f"{timestamp}\n{gps_info}"
 
-    def _build_mux_cmd(self):
-        """Tạo lệnh FFmpeg mux từ pipes (raw video + audio)"""
-        hls_path = os.path.join(self.hls_dir, "live.m3u8")
-        cmd = [
-            "ffmpeg",
-            "-hide_banner", "-loglevel", "error",
-            "-f", "rawvideo",
-            "-pixel_format", "bgr24",  # OpenCV default
-            "-video_size", self.video_size,
-            "-framerate", str(self.video_fps),
-            "-i", self.video_pipe,  # Raw video pipe
-        ]
+    def setup_flask_routes(self):
+        """Setup Flask routes for MJPEG stream (video only)"""
+        @self.app.route('/video_feed')
+        def video_feed():
+            def gen_frames():
+                while not self._stop_flag:
+                    with self.frame_lock:
+                        if self.frame_queue:
+                            # Keep only latest frame to avoid lag
+                            frame = self.frame_queue[-1]
+                            self.frame_queue = [frame]  # Update to latest
+                        else:
+                            yield b''  # Empty frame
+                            continue
+                    ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    if ret:
+                        frame_bytes = buffer.tobytes()
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                    time.sleep(1 / self.video_fps)
+            return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-        # Optional audio part
-        if self.micro and hasattr(self, 'audio_device_index') and self.audio_device_index is not None:
-            cmd += [
-                "-f", "s16le",  # Raw audio format từ PyAudio
-                "-ar", str(self.audio_rate),
-                "-ac", str(self.audio_channels),
-                "-i", self.audio_pipe,  # Raw audio pipe
-                "-c:a", "aac",
-                "-b:a", "128k",
-            ]
-            map_args = ["-map", "0:v", "-map", "1:a"]
-        else:
-            print("⚠️ Không có thiết bị audio, sẽ chỉ ghi hình (không có tiếng).")
-            map_args = ["-map", "0:v"]
+    def _mux_to_mp4(self):
+        """Ghép AVI + WAV thành MP4 bằng MoviePy (no FFmpeg subprocess)"""
+        if not self.current_segment:
+            return
+        
+        video_file = f"{self.current_segment}.avi"
+        audio_file = f"{self.current_segment}.wav"
+        mp4_file = f"{self.current_segment}.mp4"
+        
+        if not os.path.exists(video_file):
+            print("⚠️ Không có file video để ghép.")
+            return
+        
+        try:
+            video = VideoFileClip(video_file)
+            if os.path.exists(audio_file):
+                audio = AudioFileClip(audio_file)
+                final = video.set_audio(audio)
+            else:
+                final = video
+            final.write_videofile(mp4_file, codec='libx264', audio_codec='aac' if os.path.exists(audio_file) else None, verbose=False, logger=None)
+            print(f"✅ Ghép thành công: {mp4_file} (video AVI + audio WAV)")
+            
+            # Xóa file tạm
+            os.remove(video_file)
+            if os.path.exists(audio_file):
+                os.remove(audio_file)
+            final.close()
+            video.close()
+            if os.path.exists(audio_file):
+                audio.close()
+        except Exception as e:
+            print(f"⚠️ Lỗi ghép MP4: {e}")
 
-        # Video encoding (không cần vf vì overlay đã add trong OpenCV)
-        cmd += [
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "23",
-        ]
+    def _start_new_segment(self):
+        """Bắt đầu segment mới cho video + audio"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.current_segment = f"{self.output_dir}/{timestamp}_cam0"
+        
+        # Video writer (AVI for native OpenCV)
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Or 'MJPG' if XVID not work
+        self.video_writer = cv2.VideoWriter(f"{self.current_segment}.avi", fourcc, self.video_fps, (self.video_width, self.video_height))
+        
+        # Audio writer (WAV)
+        if self.audio_device_index is not None:
+            self.audio_writer = wave.open(f"{self.current_segment}.wav", 'wb')
+            self.audio_writer.setnchannels(self.audio_channels)
+            self.audio_writer.setsampwidth(2)  # 16-bit
+            self.audio_writer.setframerate(self.audio_rate)
+            self.audio_frames = []  # Reset buffer
 
-        # Mapping and output - Fix tee quoting
-        segment_output = f"[f=segment:strftime=1:segment_time={self.segment_seconds}:reset_timestamps=1]'{self.output_dir}/%Y%m%d_%H%M%S_cam0.mp4'"
-        hls_output = f"[f=hls:hls_time=4:hls_list_size=5:hls_flags=delete_segments]{hls_path}"
-        outputs = f"{segment_output}|{hls_output}"
-        cmd += map_args + ["-f", "tee", outputs]
-        print("Mux cmd:", " ".join(cmd))  # Debug
-        return cmd
+        self.segment_start = time.time()
+        print(f"📹 Bắt đầu segment mới: {self.current_segment} (AVI + WAV)")
 
-    def _video_thread_func(self):
-        """Thread đọc video từ OpenCV, add overlay, write raw vào pipe"""
+    def _video_audio_thread(self):
+        """Thread đọc video + audio, ghi segment, push frame cho stream, ghép MP4 khi kết thúc segment"""
         cap = cv2.VideoCapture(self.video_index, cv2.CAP_V4L2)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.video_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.video_height)
@@ -251,40 +289,9 @@ class PiStreamer:
             print("❌ Không mở được camera!")
             return
 
-        with open(self.video_pipe, 'wb') as pipe:
-            while not self._stop_flag:
-                ret, frame = cap.read()
-                if not ret:
-                    print("⚠️ Không đọc được frame.")
-                    time.sleep(0.1)
-                    continue
-
-                # Add overlay text direct
-                overlay_text = self._get_overlay_text()
-                lines = overlay_text.split('\n')
-                y_offset = 10
-                for line in lines:
-                    cv2.putText(frame, line, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                    y_offset += 25
-
-                # Write raw BGR24 bytes vào pipe
-                pipe.write(frame.tobytes())
-                pipe.flush()
-
-                time.sleep(1 / self.video_fps)  # Control FPS
-
-        cap.release()
-        print("✅ Video thread stopped.")
-
-    def _audio_thread_func(self):
-        """Thread đọc audio từ PyAudio, write raw vào pipe"""
-        if not self.micro or not hasattr(self, 'audio_device_index') or self.audio_device_index is None:
-            print("⚠️ Không có audio device, bỏ qua audio thread.")
-            return
-
         p = pyaudio.PyAudio()
         stream = None
-        try:
+        if self.audio_device_index is not None:
             stream = p.open(
                 format=pyaudio.paInt16,
                 channels=self.audio_channels,
@@ -294,37 +301,64 @@ class PiStreamer:
                 frames_per_buffer=1024
             )
 
-            with open(self.audio_pipe, 'wb') as pipe:
-                while not self._stop_flag:
-                    try:
-                        data = stream.read(1024, exception_on_overflow=False)
-                        pipe.write(data)
-                        pipe.flush()
-                    except Exception as e:
-                        print(f"⚠️ Audio read error: {e}")
-                        time.sleep(0.01)
+        self._start_new_segment()
 
-        except Exception as e:
-            print(f"❌ Audio init error: {e}")
-        finally:
+        while not self._stop_flag:
+            ret, frame = cap.read()
+            if not ret:
+                print("⚠️ Không đọc được frame.")
+                time.sleep(0.1)
+                continue
+
+            # Add overlay text direct
+            overlay_text = self._get_overlay_text()
+            lines = overlay_text.split('\n')
+            y_offset = 10
+            for line in lines:
+                cv2.putText(frame, line, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                y_offset += 25
+
+            # Write raw BGR24 bytes to video writer
+            self.video_writer.write(frame)
+
+            # Push frame for MJPEG stream
+            with self.frame_lock:
+                self.frame_queue.append(frame)
+
+            # Read and buffer audio if available
             if stream:
-                stream.stop_stream()
-                stream.close()
-            p.terminate()
-            print("✅ Audio thread stopped.")
+                try:
+                    data = stream.read(1024, exception_on_overflow=False)
+                    self.audio_frames.append(data)
+                except Exception as e:
+                    print(f"⚠️ Audio read error: {e}")
 
-    def _mux_thread_func(self):
-        """Thread chạy FFmpeg mux từ pipes"""
-        cmd = self._build_mux_cmd()
-        self.ffmpeg_process = subprocess.Popen(cmd)
-        self.ffmpeg_process.wait()
-        if self.ffmpeg_process.returncode != 0:
-            print(f"⚠️ Mux FFmpeg exited with code {self.ffmpeg_process.returncode}")
-        else:
-            print("✅ Mux thread stopped.")
+            # Check segment time
+            if time.time() - self.segment_start >= self.segment_seconds:
+                self.video_writer.release()
+                if self.audio_writer:
+                    self.audio_writer.writeframes(b''.join(self.audio_frames))
+                    self.audio_writer.close()
+                self._mux_to_mp4()  # Ghép AVI + WAV thành MP4
+                self._start_new_segment()
+
+            time.sleep(1 / self.video_fps)  # Control FPS
+
+        # Final segment
+        self.video_writer.release()
+        if self.audio_writer:
+            self.audio_writer.writeframes(b''.join(self.audio_frames))
+            self.audio_writer.close()
+        self._mux_to_mp4()  # Ghép cuối
+        if stream:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+        cap.release()
+        print("✅ Video/Audio thread stopped.")
 
     def start(self):
-        if self.video_thread and self.video_thread.is_alive():
+        if hasattr(self, '_video_audio_thread') and self._video_audio_thread.is_alive():
             print("⚠️ Streaming đang chạy!")
             return
 
@@ -339,33 +373,18 @@ class PiStreamer:
                 print("⚠️ Không đủ dung lượng trống!")
                 return
 
-        # Tạo named pipes
-        temp_dir = tempfile.gettempdir()  # Import tempfile nếu chưa
-        self.video_pipe = os.path.join(temp_dir, 'video_pipe.raw')
-        self.audio_pipe = None
-        os.mkfifo(self.video_pipe)
-        if self.micro and hasattr(self, 'audio_device_index') and self.audio_device_index is not None:
-            self.audio_pipe = os.path.join(temp_dir, 'audio_pipe.raw')
-            os.mkfifo(self.audio_pipe)
-
         self._stop_flag = False
-        print(f"🚀 Bắt đầu ghi và stream (mỗi {self.segment_seconds}s lưu 1 file)...")
+        print(f"🚀 Bắt đầu ghi và stream (mỗi {self.segment_seconds}s lưu 1 file MP4 ghép video+audio)...")
         print("   ↳ Lưu tại:", self.output_dir)
         print("   ↳ HLS tại:", self.hls_dir)
 
         # Start threads
-        self.video_thread = threading.Thread(target=self._video_thread_func, daemon=True)
-        self.audio_thread = threading.Thread(target=self._audio_thread_func, daemon=True) if self.micro and hasattr(self, 'audio_device_index') and self.audio_device_index is not None else None
-        self.mux_thread = threading.Thread(target=self._mux_thread_func, daemon=True)
-
-        self.video_thread.start()
-        if self.audio_thread:
-            self.audio_thread.start()
-        self.mux_thread.start()
+        self._video_audio_thread = threading.Thread(target=self._video_audio_thread, daemon=True)
+        self._video_audio_thread.start()
 
         time.sleep(2)  # Đợi setup
 
-        if self.video_thread.is_alive():
+        if self._video_audio_thread.is_alive():
             print("✅ Streaming threads đã khởi động thành công.")
             # Bật LED khi bắt đầu ghi
             self.led_control.on()
@@ -396,24 +415,14 @@ class PiStreamer:
 
     def stop(self):
         self._stop_flag = True
-        if self.ffmpeg_process and self.ffmpeg_process.poll() is None:
-            print("🛑 Dừng FFmpeg mux...")
-            self.ffmpeg_process.send_signal(signal.SIGINT)
-            try:
-                self.ffmpeg_process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self.ffmpeg_process.kill()
-            # Tắt LED khi dừng ghi
-            self.led_control.off()
-            print("✅ Đã dừng.")
-        else:
-            print("⚠️ Không có tiến trình FFmpeg đang chạy.")
-
-        # Cleanup pipes
-        if self.video_pipe and os.path.exists(self.video_pipe):
-            os.unlink(self.video_pipe)
-        if self.audio_pipe and os.path.exists(self.audio_pipe):
-            os.unlink(self.audio_pipe)
+        if hasattr(self, '_video_audio_thread'):
+            print("⏱ Dừng video/audio thread...")
+            self._video_audio_thread.join(timeout=5)
+            if self._video_audio_thread.is_alive():
+                print("⚠️ Video thread vẫn đang chạy sau 5 giây timeout.")
+        # Tắt LED khi dừng ghi
+        self.led_control.off()
+        print("✅ Đã dừng.")
 
     def cleanup(self):
         """
@@ -426,38 +435,9 @@ class PiStreamer:
         self._stop_flag = True
 
         # 2️⃣ Dừng video/audio/mux threads
-        if self.video_thread:
-            print("⏱ Dừng video thread...")
-            self.video_thread.join(timeout=5)
-            if self.video_thread.is_alive():
-                print("⚠️ Video thread vẫn đang chạy sau 5 giây timeout.")
+        self.stop()
 
-        if self.audio_thread:
-            print("⏱ Dừng audio thread...")
-            self.audio_thread.join(timeout=5)
-            if self.audio_thread.is_alive():
-                print("⚠️ Audio thread vẫn đang chạy sau 5 giây timeout.")
-
-        # 3️⃣ Dừng FFmpeg an toàn (mux)
-        if hasattr(self, "ffmpeg_process") and self.ffmpeg_process and self.ffmpeg_process.poll() is None:
-            print("🛑 Dừng FFmpeg...")
-            try:
-                # gửi SIGINT để FFmpeg flush buffer
-                self.ffmpeg_process.send_signal(signal.SIGINT)
-                self.ffmpeg_process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                print("⚠️ FFmpeg không phản hồi, kill đột ngột...")
-                self.ffmpeg_process.kill()
-                self.ffmpeg_process.wait()
-            print(f"✅ FFmpeg đã dừng, returncode={self.ffmpeg_process.returncode}")
-
-        # 4️⃣ Cleanup pipes
-        if self.video_pipe and os.path.exists(self.video_pipe):
-            os.unlink(self.video_pipe)
-        if self.audio_pipe and os.path.exists(self.audio_pipe):
-            os.unlink(self.audio_pipe)
-
-        # 5️⃣ Tắt LED (nếu có)
+        # 3️⃣ Tắt LED (nếu có)
         if hasattr(self, 'led_control'):
             try:
                 self.led_control.off()
@@ -465,7 +445,7 @@ class PiStreamer:
             except Exception as e:
                 print(f"⚠️ Lỗi khi tắt LED: {e}")
 
-        # 6️⃣ Đóng GNSS module (nếu có)
+        # 4️⃣ Đóng GNSS module (nếu có)
         if hasattr(self, 'gnss') and getattr(self, 'gnss_available', False):
             try:
                 self.gnss.close()
@@ -473,7 +453,7 @@ class PiStreamer:
             except Exception as e:
                 print(f"⚠️ Lỗi khi đóng GNSS: {e}")
 
-        # 7️⃣ Đóng RTC module (nếu có)
+        # 5️⃣ Đóng RTC module (nếu có)
         if hasattr(self, 'rtc') and getattr(self, 'rtc_available', False):
             try:
                 self.rtc.close()
