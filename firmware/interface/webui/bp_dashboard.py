@@ -315,13 +315,23 @@ def index():
     # Lấy video_fps từ config
     video_fps = cfg_get("video.fps", 15)
     
+    # Tạo storage dict, đảm bảo không trùng key
+    storage_info = {
+        'path': str(record_root),
+        'min_free_gb': float(cfg_get("storage.min_free_gb", 10)),
+        **st  # Merge disk_info (đã có mount, total_gb, used_gb, free_gb)
+    }
+    # Đảm bảo có mount key
+    if 'mount' not in storage_info:
+        storage_info['mount'] = record_root.anchor or "/"
+    
     body = render_template_string(_HTML,
         dev=dev, 
         leds=leds_status(), 
         recording=rec_is_active(), 
         wifi_up=iface_is_up(cfg_get("wifi.iface","wlan0")),
         video_fps=video_fps,
-        storage=dict(path=str(record_root), mount=record_root.anchor or "/", min_free_gb=float(cfg_get("storage.min_free_gb",10)), **st),
+        storage=storage_info,
         files=files,
         clock=time_info(),
         hw=hw_inventory()
