@@ -222,23 +222,51 @@ class PiStreamer:
             # Cấu hình audio nếu được bật
             if self.config['capabilities'].get('audio', False):
                 self.micro = Micro()
-                device_index_raw = self.micro.get_first_available_device()
-                if device_index_raw:
-                    # Parse device info
-                    # Format: "[1] HD camera: USB Audio (hw:1,0)"
-                    try:
-                        parts = device_index_raw.split(']')[0].split('[')
-                        if len(parts) > 1:
-                            self.audio_device_index = int(parts[1].strip())
-                        else:
-                            self.audio_device_index = None
-                    except:
-                        self.audio_device_index = None
+                device_str = self.micro.get_first_available_device()
+                
+                if device_str:
+                    # Parse device string
+                    # Có thể là: "hw:1,0" hoặc "[1] HD camera: USB Audio (hw:1,0)"
+                    self.audio_device_index = None
                     
-                    self.audio_dev = self.config['audio']['device']  # Giữ config cho log
+                    # Case 1: Format "[index] name (hw:x,y)"
+                    if device_str.startswith('['):
+                        try:
+                            parts = device_str.split(']')[0].split('[')
+                            if len(parts) > 1:
+                                self.audio_device_index = int(parts[1].strip())
+                        except:
+                            pass
+                    
+                    # Case 2: Just "hw:x,y" - need to find index by querying PyAudio
+                    if self.audio_device_index is None and device_str.startswith('hw:'):
+                        # Parse hw:x,y to get card and device numbers
+                        try:
+                            hw_parts = device_str.replace('hw:', '').split(',')
+                            card_num = int(hw_parts[0])
+                            
+                            # Find PyAudio device index by searching for matching ALSA name
+                            import pyaudio
+                            p = pyaudio.PyAudio()
+                            try:
+                                for i in range(p.get_device_count()):
+                                    info = p.get_device_info_by_index(i)
+                                    name = info.get('name', '').lower()
+                                    # Check if device name contains "hw:x,y" pattern
+                                    if f"hw:{card_num}" in name.lower() or f"card{card_num}" in name.lower():
+                                        if info.get('maxInputChannels', 0) > 0:
+                                            self.audio_device_index = i
+                                            print(f"   ↳ Tìm thấy PyAudio device index: {i} ({info['name']})")
+                                            break
+                            finally:
+                                p.terminate()
+                        except Exception as e:
+                            print(f"⚠️ Lỗi parse hw string: {e}")
+                    
+                    self.audio_dev = device_str  # Giữ config cho log
                     
                     if self.audio_device_index is None:
-                        print(f"⚠️ Không thể parse device index từ: {device_index_raw}")
+                        print(f"⚠️ Không thể tìm PyAudio device index từ: {device_str}")
                         self.audio_device_index = None
                     else:
                         # Kiểm tra device có hỗ trợ sample rate từ config không
