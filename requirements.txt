@@ -11,3 +11,4 @@ smbus2
 ffmpeg-python
 moviepy
 requests
+flask-socketio
