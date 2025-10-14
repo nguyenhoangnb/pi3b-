@@ -260,7 +260,7 @@ class PiStreamer:
             else:
                 return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         except Exception as e:
-            print(f"⚠️ Lỗi đọc RTC: {e}")
+            # print(f"⚠️ Lỗi đọc RTC: {e}")
             return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     def _get_gps_info(self):
@@ -326,7 +326,7 @@ class PiStreamer:
             video = VideoFileClip(video_file)
             if os.path.exists(audio_file):
                 audio = AudioFileClip(audio_file)
-                final = video.set_audio(audio)
+                final = video.with_audio(audio)
             else:
                 final = video
             final.write_videofile(mp4_file, codec='libx264', audio_codec='aac' if os.path.exists(audio_file) else None, verbose=False, logger=None)
