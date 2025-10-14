@@ -20,7 +20,51 @@ from firmware.hal.gnss import GNSSModule
 from firmware.hal.rtc import rtcModule
 from firmware.hal.micro import Micro
 from firmware.config.config_loader import load
-
+def _get_pyaudio_device_index(device_name_or_index):
+    """
+    Convert device name (hw:1,0) hoặc string index thành PyAudio device index.
+    
+    Args:
+        device_name_or_index: có thể là:
+            - int: 0, 1, 2... (PyAudio index)
+            - str: "hw:1,0" (ALSA name)
+            - str: "1" (string number)
+    
+    Returns:
+        int: PyAudio device index, hoặc None nếu không tìm được
+    """
+    import pyaudio
+    
+    # Nếu đã là int, trả về ngay
+    if isinstance(device_name_or_index, int):
+        return device_name_or_index
+    
+    # Nếu là string number, convert sang int
+    if isinstance(device_name_or_index, str):
+        try:
+            return int(device_name_or_index)
+        except ValueError:
+            pass  # Không phải number, tiếp tục search
+    
+    # Search device theo tên (ALSA name như "hw:1,0")
+    p = pyaudio.PyAudio()
+    device_str = str(device_name_or_index).lower()
+    
+    try:
+        for i in range(p.get_device_count()):
+            info = p.get_device_info_by_index(i)
+            device_name = info.get('name', '').lower()
+            
+            # Check nếu tên device match
+            if device_str in device_name:
+                print(f"   ✅ Tìm thấy device '{device_name}' tại index {i}")
+                p.terminate()
+                return i
+    finally:
+        p.terminate()
+    
+    print(f"   ⚠️ Không tìm thấy device '{device_name_or_index}'")
+    return None
 class PiStreamer:
     def __init__(self,
                  video_dev=0,  # Index for OpenCV
@@ -129,15 +173,16 @@ class PiStreamer:
                 self.micro = Micro()
                 device_index_raw = self.micro.get_first_available_device()
                 if device_index_raw:
-                    # Giả sử returns str or int, convert to int
-                    self.audio_device_index = int(device_index_raw) if isinstance(device_index_raw, str) else device_index_raw
+                    # Sử dụng helper function để convert
+                    self.audio_device_index = _get_pyaudio_device_index(device_index_raw)
                     self.audio_dev = self.config['audio']['device']  # Giữ config cho log
+                    
+                    if self.audio_device_index is None:
+                        print(f"⚠️ Không thể tìm device audio: {device_index_raw}")
+                        self.audio_device_index = None
                 else:
                     self.audio_device_index = None
                     print("⚠️ Không tìm thấy thiết bị audio.")
-                print("Audio", self.audio_dev)
-                self.audio_rate = self.config['audio'].get('sample_rate', 48000)
-                self.audio_channels = self.config['audio'].get('channels', 1)
             
             # Cấu hình lưu trữ
             self.output_dir = self.config['paths']['record_root']

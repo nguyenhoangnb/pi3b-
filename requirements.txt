@@ -9,3 +9,5 @@ flask
 RPi.GPIO
 smbus2
 ffmpeg-python
+moviepy
+requests
