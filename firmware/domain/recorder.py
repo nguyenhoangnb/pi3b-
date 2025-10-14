@@ -180,11 +180,49 @@ class PiStreamer:
                     if self.audio_device_index is None:
                         print(f"⚠️ Không thể tìm device audio: {device_index_raw}")
                         self.audio_device_index = None
+                    else:
+                        # Kiểm tra device có hỗ trợ sample rate từ config không
+                        p = pyaudio.PyAudio()
+                        try:
+                            device_info = p.get_device_info_by_index(self.audio_device_index)
+                            supported_rates = [8000, 11025, 16000, 22050, 32000, 44100, 48000, 96000]
+                            default_rate = int(device_info.get('defaultSampleRate', 44100))
+                            
+                            # Ưu tiên sample rate từ config nếu được hỗ trợ
+                            config_rate = self.config['audio'].get('sample_rate', 44100)
+                            if config_rate == default_rate:
+                                self.audio_rate = config_rate
+                            else:
+                                # Thử các sample rate phổ biến
+                                for rate in supported_rates:
+                                    try:
+                                        test_stream = p.open(
+                                            format=pyaudio.paInt16,
+                                            channels=1,
+                                            rate=rate,
+                                            input=True,
+                                            input_device_index=self.audio_device_index,
+                                            frames_per_buffer=1024,
+                                            start=False
+                                        )
+                                        test_stream.close()
+                                        self.audio_rate = rate
+                                        print(f"   ✅ Tìm thấy sample rate phù hợp: {rate}Hz")
+                                        break
+                                    except:
+                                        continue
+                                else:
+                                    print(f"⚠️ Không tìm được sample rate phù hợp, dùng mặc định {default_rate}Hz")
+                                    self.audio_rate = default_rate
+                        finally:
+                            p.terminate()
                 else:
                     self.audio_device_index = None
                     print("⚠️ Không tìm thấy thiết bị audio.")
-                self.audio_rate = self.config['audio'].get('sample_rate', 48000)
+                
+                # Cấu hình audio cuối cùng
                 self.audio_channels = self.config['audio'].get('channels', 1)
+                print(f"   ↳ Audio sample rate: {self.audio_rate}Hz")
             
             # Cấu hình lưu trữ
             self.output_dir = self.config['paths']['record_root']
@@ -339,14 +377,19 @@ class PiStreamer:
         p = pyaudio.PyAudio()
         stream = None
         if self.audio_device_index is not None:
-            stream = p.open(
-                format=pyaudio.paInt16,
-                channels=self.audio_channels,
-                rate=self.audio_rate,
-                input=True,
-                input_device_index=self.audio_device_index,
-                frames_per_buffer=1024
-            )
+            try:
+                stream = p.open(
+                    format=pyaudio.paInt16,
+                    channels=self.audio_channels,
+                    rate=self.audio_rate,
+                    input=True,
+                    input_device_index=self.audio_device_index,
+                    frames_per_buffer=1024
+                )
+                print(f"✅ Khởi tạo audio stream thành công ({self.audio_rate}Hz)")
+            except Exception as e:
+                print(f"⚠️ Không thể mở audio stream: {e}")
+                stream = None
 
         self._start_new_segment()
 
