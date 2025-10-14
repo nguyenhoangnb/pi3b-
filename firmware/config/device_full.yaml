@@ -17,8 +17,8 @@ webui:
   host: "0.0.0.0"
   port: 8080
 paths:
-  record_root: /media/ssd
-  log_dir: /media/ssd
+  record_root: /home/hoang/Documents
+  log_dir: /home/hoang/Documents
 storage:
   min_free_gb: 1.0
   segment_seconds: 30

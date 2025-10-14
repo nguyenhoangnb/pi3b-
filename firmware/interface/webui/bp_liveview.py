@@ -11,7 +11,7 @@ import re
 # ============================================================
 # CONFIG & SECURITY
 # ============================================================
-
+RECORDER_TIMEOUT=100
 # Allowed IP ranges (adjust these to match your legitimate client IPs)
 ALLOWED_IPS = [
     '127.0.0.1',      # localhost
@@ -57,16 +57,15 @@ def validate_request(f):
 
 bp = Blueprint("liveview", __name__)
 
-# Địa chỉ recorder service (giả sử chạy trên cùng host, port 5000)
-RECORDER_MJPEG_URL = "http://localhost:5000/video_feed"
-RECORDER_TIMEOUT = 5
+# WebSocket URL của recorder service
+RECORDER_WS_URL = "ws://localhost:5000"
 
 # ============================================================
 # MJPEG PROXY CLASS
 # ============================================================
 
 class MjpegProxy:
-    def __init__(self, recorder_url=RECORDER_MJPEG_URL):
+    def __init__(self, recorder_url=RECORDER_WS_URL):
         self.recorder_url = recorder_url
         self.queue = queue.Queue(maxsize=30)
         self.stop_event = threading.Event()
@@ -222,40 +221,69 @@ def _wait_for_recorder_ready(timeout: float = 5.0) -> bool:
     start = time.time()
     while time.time() - start < timeout:
         try:
-            response = requests.head(RECORDER_MJPEG_URL, timeout=2)
+            response = requests.head(RECORDER_WS_URL, timeout=2)
             if response.status_code == 200:
                 print("✅ Recorder sẵn sàng")
                 return True
-        except requests.exceptions.RequestException:
-            pass
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ Không thể kết nối đến recorder: {str(e)}")
         time.sleep(0.5)
-    print("⚠️ Recorder không sẵn sàng")
+    print(f"⚠️ Recorder không sẵn sàng sau {timeout}s tại {RECORDER_WS_URL}")
     return False
 
 # ============================================================
 # ROUTES
 # ============================================================
 
-@bp.get("/live.mjpg")
+@bp.get("/live")
 @validate_request
-def live_mjpeg():
-    """Stream MJPEG proxy từ recorder."""
-    if not _wait_for_recorder_ready():
-        return Response("Recorder không sẵn sàng.", status=503)
-
-    proxy._client_connected()
-    response = Response(
-        proxy._mjpeg_generator(),
-        mimetype="multipart/x-mixed-replace; boundary=frame"
-    )
-    
-    # Add security headers
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
-    response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
-    response.headers['Content-Security-Policy'] = "default-src 'self'"
-    return response
+def live_video():
+    """Return HTML page with WebSocket video player."""
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Live Video</title>
+        <style>
+            body { margin: 0; background: #000; }
+            #videoCanvas { width: 100%; max-height: 100vh; }
+        </style>
+    </head>
+    <body>
+        <canvas id="videoCanvas"></canvas>
+        <script src="/static/socket.io.js"></script>
+        <script>
+            const canvas = document.getElementById('videoCanvas');
+            const ctx = canvas.getContext('2d');
+            // Kết nối đến recorder service (cùng domain)
+            const socket = io(window.location.protocol + '//' + window.location.hostname + ':5000');
+            
+            socket.on('connect', () => {
+                console.log('Connected to recorder');
+            });
+            
+            socket.on('video_frame', (data) => {
+                const img = new Image();
+                img.onload = () => {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                };
+                img.src = 'data:image/jpeg;base64,' + data.frame;
+            });
+            
+            socket.on('disconnect', () => {
+                console.log('Disconnected from recorder');
+            });
+            
+            socket.on('connect_error', (error) => {
+                console.error('Connection error:', error);
+            });
+        </script>
+    </body>
+    </html>
+    """
+    return Response(html, mimetype='text/html')
 
 @bp.get("/stream/health")
 @validate_request
@@ -265,7 +293,7 @@ def stream_health():
         "status": "healthy" if proxy.is_healthy() else "degraded",
         "active_clients": proxy.active_clients,
         "is_streaming": proxy.is_streaming,
-        "recorder_url": RECORDER_MJPEG_URL
+        "recorder_url": RECORDER_WS_URL
     }
     
     response = Response(

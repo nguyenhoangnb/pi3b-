@@ -10,10 +10,58 @@ import sys
 import tempfile
 import wave  # Built-in for WAV audio
 import pyaudio  # For audio capture
+from moviepy.video.io.ffmpeg_tools import ffmpeg_merge_video_audio
+import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 import cv2
-from flask import Flask, Response  # For MJPEG stream
+
+class SegmentManager:
+    """Class quản lý segment cho video và audio recording"""
+    def __init__(self, output_dir, segment_seconds):
+        self.output_dir = output_dir
+        self.segment_seconds = segment_seconds
+        self.current_segment = None
+        self.segment_start = 0  # Khởi tạo với 0 thay vì None
+        self._lock = threading.Lock()
+        self._segment_complete = {'video': False, 'audio': False}
+        self._merge_event = threading.Event()
+        
+    def start_new_segment(self):
+        """Bắt đầu segment mới và trả về thông tin segment"""
+        with self._lock:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.current_segment = f"{self.output_dir}/{timestamp}_cam0"
+            self.segment_start = time.time()
+            self._segment_complete = {'video': False, 'audio': False}
+            self._merge_event.clear()
+            return self.current_segment
+            
+    def mark_complete(self, stream_type):
+        """Đánh dấu một luồng (video/audio) đã hoàn thành segment"""
+        with self._lock:
+            self._segment_complete[stream_type] = True
+            if all(self._segment_complete.values()):
+                self._merge_event.set()
+                
+    def wait_for_merge(self, timeout=None):
+        """Đợi cả video và audio hoàn thành để ghép file"""
+        return self._merge_event.wait(timeout)
+        
+    def should_start_new(self):
+        """Kiểm tra xem đã đến lúc bắt đầu segment mới chưa"""
+        return time.time() - self.segment_start >= self.segment_seconds
+        
+    def get_current_paths(self):
+        """Lấy đường dẫn file cho segment hiện tại"""
+        return {
+            'video': f"{self.current_segment}.avi",
+            'audio': f"{self.current_segment}.wav",
+            'output': f"{self.current_segment}.mp4"
+        }
+from flask import Flask, Response, current_app
+from flask_socketio import SocketIO, emit  # For WebSocket stream
 from moviepy import VideoFileClip, AudioFileClip  # For merging video + audio to MP4 (pip install moviepy)
+import base64  # For encoding frame to base64
 from firmware.hal.usb_manager import USBManager    
 from firmware.hal.gpio_leds import gpioLed
 from firmware.hal.gnss import GNSSModule
@@ -115,10 +163,13 @@ class PiStreamer:
         self.audio_device_index = None
         self.micro = None
 
-        # Flask app for MJPEG stream (video only for web)
+        # Flask app with SocketIO for WebSocket stream
         self.app = Flask(__name__)
+        self.app.debug = False  # Disable debug mode to prevent auto-reload
+        self.socketio = SocketIO(self.app, cors_allowed_origins="*", async_mode='threading')
         self.frame_queue = []  # Simple queue for frames (latest only to reduce lag)
         self.frame_lock = threading.Lock()
+        self.ws_clients = set()  # Track connected WebSocket clients
 
     def check_liscam(self):
         """Tìm index camera hoạt động bằng cách thử các index từ 0 đến 9"""
@@ -174,7 +225,7 @@ class PiStreamer:
                 device_index_raw = self.micro.get_first_available_device()
                 if device_index_raw:
                     # Sử dụng helper function để convert
-                    self.audio_device_index = _get_pyaudio_device_index(device_index_raw)
+                    self.audio_device_index = 6
                     self.audio_dev = self.config['audio']['device']  # Giữ config cho log
                     
                     if self.audio_device_index is None:
@@ -198,7 +249,7 @@ class PiStreamer:
                                     try:
                                         test_stream = p.open(
                                             format=pyaudio.paInt16,
-                                            channels=1,
+                                            channels=2,
                                             rate=rate,
                                             input=True,
                                             input_device_index=self.audio_device_index,
@@ -237,11 +288,13 @@ class PiStreamer:
             if hasattr(self, 'audio_dev') and self.audio_device_index is not None:
                 print(f"   ↳ Audio: {self.audio_dev} (index {self.audio_device_index}, {self.audio_channels}ch @ {self.audio_rate}Hz)")
             else:
-                print("   ↳ Audio: Không có thiết bị audio")
+                print("   ✖️ Audio: Không có thiết bị audio")
             print(f"   ↳ Storage: {self.output_dir}")
             print(f"   ↳ Segment: {self.segment_seconds}s")
             
+            # Setup Flask routes (always setup broadcast thread)
             self.setup_flask_routes()
+            print("   ✅ Flask routes đã được thiết lập")
             return True
             
         except KeyError as e:
@@ -288,83 +341,207 @@ class PiStreamer:
         return f"{timestamp}\n{gps_info}"
 
     def setup_flask_routes(self):
-        """Setup Flask routes for MJPEG stream (video only)"""
-        @self.app.route('/video_feed')
-        def video_feed():
-            def gen_frames():
-                while not self._stop_flag:
-                    with self.frame_lock:
-                        if self.frame_queue:
-                            # Keep only latest frame to avoid lag
-                            frame = self.frame_queue[-1]
-                            self.frame_queue = [frame]  # Update to latest
-                        else:
-                            yield b''  # Empty frame
-                            continue
+        """Setup WebSocket handlers for video stream"""
+        socketio = self.socketio  # Reference to SocketIO instance
+        ws_clients = self.ws_clients  # Reference to clients set
+        
+        # Only register routes once
+        if '/' not in [rule.rule for rule in self.app.url_map.iter_rules()]:
+            @self.app.route('/')
+            def index():
+                return "Recorder service running (WebSocket enabled)"
+        
+        @socketio.on('connect')
+        def handle_connect():
+            print(f"👤 Client connected")
+            # We can't easily get session_id here without request, just increment
+        
+        @socketio.on('disconnect')
+        def handle_disconnect():
+            print(f"👋 Client disconnected")
+            
+        def broadcast_frame():
+            """Broadcast video frame to all connected clients"""
+            print("🎬 Broadcast thread started")
+            frame_count = 0
+            while not self._stop_flag:
+                # Always broadcast if there are frames
+                with self.frame_lock:
+                    if not self.frame_queue:
+                        time.sleep(0.05)
+                        continue
+                    frame = self.frame_queue[-1]
+                    self.frame_queue = [frame]  # Keep only latest
+                
+                try:
+                    # Encode frame as JPEG then base64
                     ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                     if ret:
-                        frame_bytes = buffer.tobytes()
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                    time.sleep(1 / self.video_fps)
-            return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+                        b64_frame = base64.b64encode(buffer).decode('utf-8')
+                        # Broadcast to all clients
+                        socketio.emit('video_frame', {'frame': b64_frame})
+                        frame_count += 1
+                        if frame_count % 30 == 0:  # Log every 30 frames (2 seconds at 15fps)
+                            print(f"📡 Broadcasted {frame_count} frames")
+                except Exception as e:
+                    print(f"❌ Error broadcasting frame: {e}")
+                
+                time.sleep(1 / self.video_fps)  # Control FPS
+                
+        # Start broadcasting thread
+        self.broadcast_thread = threading.Thread(target=broadcast_frame, daemon=True)
+        self.broadcast_thread.start()
 
     def _mux_to_mp4(self):
-        """Ghép AVI + WAV thành MP4 bằng MoviePy (no FFmpeg subprocess)"""
-        if not self.current_segment:
+        """Ghép AVI + WAV thành MP4 bằng ffmpeg_merge_video_audio"""
+        if not hasattr(self, 'segment_manager'):
             return
-        
-        video_file = f"{self.current_segment}.avi"
-        audio_file = f"{self.current_segment}.wav"
-        mp4_file = f"{self.current_segment}.mp4"
+            
+        paths = self.segment_manager.get_current_paths()
+        video_file = paths['video']
+        audio_file = paths['audio']
+        mp4_file = paths['output']
         
         if not os.path.exists(video_file):
             print("⚠️ Không có file video để ghép.")
             return
-        
+
         try:
-            video = VideoFileClip(video_file)
+            # Sử dụng ffmpeg_merge_video_audio để ghép
             if os.path.exists(audio_file):
-                audio = AudioFileClip(audio_file)
-                final = video.with_audio(audio)
+                # Ghép video và audio
+                ffmpeg_merge_video_audio(
+                    video_file,
+                    audio_file,
+                    mp4_file,
+                    video_codec="libx264",
+                    audio_codec="aac",
+                )
+                print(f"✅ Ghép thành công: {mp4_file} (video AVI + audio WAV)")
             else:
-                final = video
-            final.write_videofile(mp4_file, codec='libx264', audio_codec='aac' if os.path.exists(audio_file) else None, verbose=False, logger=None)
-            print(f"✅ Ghép thành công: {mp4_file} (video AVI + audio WAV)")
+                # Chỉ convert video sang MP4 không có audio
+                ffmpeg_merge_video_audio(
+                    video_file,
+                    None,
+                    mp4_file,
+                    video_codec="libx264",
+                    audio_codec="aac",
+                )
+                print(f"✅ Convert thành công: {mp4_file} (video only)")
             
-            # Xóa file tạm
-            os.remove(video_file)
-            if os.path.exists(audio_file):
-                os.remove(audio_file)
-            final.close()
-            video.close()
-            if os.path.exists(audio_file):
-                audio.close()
+            # Cleanup source files sau khi ghép thành công
+            try:
+                if os.path.exists(video_file):
+                    os.remove(video_file)
+                    print(f"   ↳ Đã xóa file video: {video_file}")
+                if os.path.exists(audio_file):
+                    os.remove(audio_file)
+                    print(f"   ↳ Đã xóa file audio: {audio_file}")
+            except Exception as e:
+                print(f"⚠️ Lỗi xoá file nguồn: {e}")
+                print(f"   ↳ Video exists: {os.path.exists(video_file)}")
+                print(f"   ↳ Audio exists: {os.path.exists(audio_file)}")
+                
         except Exception as e:
             print(f"⚠️ Lỗi ghép MP4: {e}")
+            # Cleanup on error
+            if os.path.exists(mp4_file):
+                try:
+                    os.remove(mp4_file)
+                    print(f"   ↳ Đã xóa file MP4 lỗi: {mp4_file}")
+                except Exception as e:
+                    print(f"⚠️ Lỗi xóa file MP4: {e}")
 
-    def _start_new_segment(self):
-        """Bắt đầu segment mới cho video + audio"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.current_segment = f"{self.output_dir}/{timestamp}_cam0"
+    def _audio_thread(self):
+        """Thread đọc và ghi audio độc lập"""
+        if self.audio_device_index is None:
+            print("⚠️ Không có thiết bị audio, audio thread không chạy")
+            return
+
+        # Cấu hình cố định để đảm bảo tính ổn định
+        CHUNK = 1024
+        FORMAT = pyaudio.paInt16
+        CHANNELS = 1
+        RATE = 48000
+
+        p = pyaudio.PyAudio()
+        try:
+            stream = p.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                frames_per_buffer=CHUNK,
+                input=True,
+                # input_device_index=self.audio_device_index
+            )
+            print(f"✅ Khởi tạo audio stream thành công ({RATE}Hz, {CHANNELS} channels)")
+        except Exception as e:
+            print(f"⚠️ Không thể mở audio stream: {e}")
+            p.terminate()
+            return
+
+        # Đảm bảo có SegmentManager và segment đã được bắt đầu
+        if not hasattr(self, 'segment_manager'):
+            self.segment_manager = SegmentManager(self.output_dir, self.segment_seconds)
+            
+        # Đợi segment được khởi tạo bởi video thread
+        wait_start = time.time()
+        while self.segment_manager.current_segment is None:
+            if time.time() - wait_start > 5:  # Timeout sau 5 giây
+                print("⚠️ Timeout chờ video thread khởi tạo segment")
+                return
+            time.sleep(0.1)
+
+        # Bắt đầu ghi audio vào segment hiện tại
+        current_segment = self.segment_manager.get_current_paths()['audio']
+        current_writer = wave.open(current_segment, 'wb')
+        current_writer.setnchannels(CHANNELS)
+        current_writer.setsampwidth(p.get_sample_size(FORMAT))  # 16-bit PCM
+        current_writer.setframerate(RATE)
+        audio_frames = []  # Initialize array to store frames
+
+        while not self._stop_flag:
+            try:
+                data = stream.read(CHUNK)  # Đọc chunk data từ stream
+                audio_frames.append(data)
+                
+                # Kiểm tra segment mới
+                if self.segment_manager.should_start_new():
+                    # Ghi toàn bộ frames vào file WAV
+                    current_writer.writeframes(b''.join(audio_frames))
+                    current_writer.close()
+                    self.segment_manager.mark_complete('audio')
+                    
+                    # Đợi video hoàn thành và ghép file
+                    if self.segment_manager.wait_for_merge(timeout=1.0):
+                        self._mux_to_mp4()
+                    
+                    # Bắt đầu segment mới
+                    current_segment = self.segment_manager.get_current_paths()['audio']
+                    current_writer = wave.open(current_segment, 'wb')
+                    current_writer.setnchannels(CHANNELS)
+                    current_writer.setsampwidth(p.get_sample_size(FORMAT))
+                    current_writer.setframerate(RATE)
+                    audio_frames = []  # Reset frame buffer
+                    
+            except Exception as e:
+                print(f"⚠️ Lỗi đọc audio: {e}")
+                time.sleep(0.1)
+
+        # Ghi nốt phần cuối
+        if audio_frames:
+            current_writer.writeframes(b''.join(audio_frames))
+        current_writer.close()
+        self.segment_manager.mark_complete('audio')
         
-        # Video writer (AVI for native OpenCV)
-        fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Or 'MJPG' if XVID not work
-        self.video_writer = cv2.VideoWriter(f"{self.current_segment}.avi", fourcc, self.video_fps, (self.video_width, self.video_height))
-        
-        # Audio writer (WAV)
-        if self.audio_device_index is not None:
-            self.audio_writer = wave.open(f"{self.current_segment}.wav", 'wb')
-            self.audio_writer.setnchannels(self.audio_channels)
-            self.audio_writer.setsampwidth(2)  # 16-bit
-            self.audio_writer.setframerate(self.audio_rate)
-            self.audio_frames = []  # Reset buffer
+        # Cleanup
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+        print("✅ Audio thread stopped.")
 
-        self.segment_start = time.time()
-        print(f"📹 Bắt đầu segment mới: {self.current_segment} (AVI + WAV)")
-
-    def _video_audio_thread(self):
-        """Thread đọc video + audio, ghi segment, push frame cho stream, ghép MP4 khi kết thúc segment"""
+    def _video_thread(self):
+        """Thread đọc và ghi video độc lập"""
         cap = cv2.VideoCapture(self.video_index, cv2.CAP_V4L2)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.video_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.video_height)
@@ -373,25 +550,19 @@ class PiStreamer:
         if not cap.isOpened():
             print("❌ Không mở được camera!")
             return
-
-        p = pyaudio.PyAudio()
-        stream = None
-        if self.audio_device_index is not None:
-            try:
-                stream = p.open(
-                    format=pyaudio.paInt16,
-                    channels=self.audio_channels,
-                    rate=self.audio_rate,
-                    input=True,
-                    input_device_index=self.audio_device_index,
-                    frames_per_buffer=1024
-                )
-                print(f"✅ Khởi tạo audio stream thành công ({self.audio_rate}Hz)")
-            except Exception as e:
-                print(f"⚠️ Không thể mở audio stream: {e}")
-                stream = None
-
-        self._start_new_segment()
+        
+        # Khởi tạo SegmentManager nếu chưa có
+        if not hasattr(self, 'segment_manager'):
+            self.segment_manager = SegmentManager(self.output_dir, self.segment_seconds)
+            
+        # Bắt đầu segment đầu tiên
+        current_segment = self.segment_manager.start_new_segment()
+        current_writer = cv2.VideoWriter(
+            f"{current_segment}.avi",
+            cv2.VideoWriter_fourcc(*'XVID'),
+            self.video_fps,
+            (self.video_width, self.video_height)
+        )
 
         while not self._stop_flag:
             ret, frame = cap.read()
@@ -408,49 +579,47 @@ class PiStreamer:
                 cv2.putText(frame, line, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                 y_offset += 25
 
-            # Write raw BGR24 bytes to video writer
-            self.video_writer.write(frame)
+            # Write video frame
+            current_writer.write(frame)
 
             # Push frame for MJPEG stream
             with self.frame_lock:
                 self.frame_queue.append(frame)
 
-            # Read and buffer audio if available
-            if stream:
-                try:
-                    data = stream.read(1024, exception_on_overflow=False)
-                    self.audio_frames.append(data)
-                except Exception as e:
-                    print(f"⚠️ Audio read error: {e}")
-
-            # Check segment time
-            if time.time() - self.segment_start >= self.segment_seconds:
-                self.video_writer.release()
-                if self.audio_writer:
-                    self.audio_writer.writeframes(b''.join(self.audio_frames))
-                    self.audio_writer.close()
-                self._mux_to_mp4()  # Ghép AVI + WAV thành MP4
-                self._start_new_segment()
+            # Check if need new segment
+            if self.segment_manager.should_start_new():
+                current_writer.release()
+                self.segment_manager.mark_complete('video')
+                
+                # Đợi audio hoàn thành và bắt đầu segment mới
+                if self.segment_manager.wait_for_merge(timeout=1.0):
+                    self._mux_to_mp4()
+                    
+                current_segment = self.segment_manager.start_new_segment()
+                current_writer = cv2.VideoWriter(
+                    f"{current_segment}.avi",
+                    cv2.VideoWriter_fourcc(*'XVID'),
+                    self.video_fps,
+                    (self.video_width, self.video_height)
+                )
 
             time.sleep(1 / self.video_fps)  # Control FPS
 
         # Final segment
-        self.video_writer.release()
-        if self.audio_writer:
-            self.audio_writer.writeframes(b''.join(self.audio_frames))
-            self.audio_writer.close()
-        self._mux_to_mp4()  # Ghép cuối
-        if stream:
-            stream.stop_stream()
-            stream.close()
-            p.terminate()
+        current_writer.release()
+        self.segment_manager.mark_complete('video')
+        if self.segment_manager.wait_for_merge(timeout=1.0):
+            self._mux_to_mp4()
         cap.release()
-        print("✅ Video/Audio thread stopped.")
+        print("✅ Video thread stopped.")
 
     def start(self):
-        # Check if thread already running
-        if hasattr(self, '_thread') and self._thread and self._thread.is_alive():
-            print("⚠️ Streaming đang chạy!")
+        # Check if threads already running
+        if hasattr(self, '_video_thread_obj') and self._video_thread_obj and self._video_thread_obj.is_alive():
+            print("⚠️ Video thread đang chạy!")
+            return
+        if hasattr(self, '_audio_thread_obj') and self._audio_thread_obj and self._audio_thread_obj.is_alive():
+            print("⚠️ Audio thread đang chạy!")
             return
 
         # Kiểm tra lại storage trước khi bắt đầu ghi
@@ -467,16 +636,36 @@ class PiStreamer:
         self._stop_flag = False
         print(f"🚀 Bắt đầu ghi và stream (mỗi {self.segment_seconds}s lưu 1 file MP4 ghép video+audio)...")
         print("   ↳ Lưu tại:", self.output_dir)
-        print("   ↳ HLS tại:", self.hls_dir)
+        
+        # Initialize segment manager before starting threads
+        self.segment_manager = SegmentManager(self.output_dir, self.segment_seconds)
+        
+        # Start video thread first
+        self._video_thread_obj = threading.Thread(target=self._video_thread, daemon=True)
+        self._video_thread_obj.start()
+        
+        # Wait for video thread to initialize
+        start_time = time.time()
+        while self.segment_manager.current_segment is None:
+            if time.time() - start_time > 5:
+                print("⚠️ Timeout chờ video thread khởi tạo")
+                return
+            time.sleep(0.1)
+            
+        print("✅ Video thread đã khởi động")
 
-        # Start thread
-        self._thread = threading.Thread(target=self._video_audio_thread, daemon=True)
-        self._thread.start()
+        # Start audio thread if device available
+        if self.audio_device_index is not None:
+            self._audio_thread_obj = threading.Thread(target=self._audio_thread, daemon=True)
+            self._audio_thread_obj.start()
+            print("✅ Audio thread đã khởi động")
 
         time.sleep(2)  # Đợi setup
 
-        if self._thread.is_alive():
-            print("✅ Streaming thread đã khởi động thành công.")
+        if self._video_thread_obj.is_alive():
+            print("✅ Video thread đã khởi động.")
+            if hasattr(self, '_audio_thread_obj') and self._audio_thread_obj.is_alive():
+                print("✅ Audio thread đã khởi động.")
             # Bật LED khi bắt đầu ghi
             self.led_control.on()
         else:
@@ -506,14 +695,23 @@ class PiStreamer:
 
     def stop(self):
         self._stop_flag = True
-        if hasattr(self, '_thread') and self._thread:
-            print("⏱ Dừng video/audio thread...")
-            self._thread.join(timeout=5)
-            if self._thread.is_alive():
+        # Dừng video thread
+        if hasattr(self, '_video_thread_obj') and self._video_thread_obj:
+            print("⏱ Dừng video thread...")
+            self._video_thread_obj.join(timeout=5)
+            if self._video_thread_obj.is_alive():
                 print("⚠️ Video thread vẫn đang chạy sau 5 giây timeout.")
+                
+        # Dừng audio thread
+        if hasattr(self, '_audio_thread_obj') and self._audio_thread_obj:
+            print("⏱ Dừng audio thread...")
+            self._audio_thread_obj.join(timeout=5)
+            if self._audio_thread_obj.is_alive():
+                print("⚠️ Audio thread vẫn đang chạy sau 5 giây timeout.")
+                
         # Tắt LED khi dừng ghi
         self.led_control.off()
-        print("✅ Đã dừng.")
+        print("✅ Đã dừng các thread.")
 
     def cleanup(self):
         """
@@ -572,11 +770,11 @@ if __name__ == "__main__":
             print("❌ Khởi tạo thất bại, đang thoát...")
             sys.exit(1)
 
-        recorder.start()  # 🔹 chỉ chạy 1 lần
-        print("📡 Đang stream... Nhấn Ctrl+C để dừng.")
-
-        while True:
-            time.sleep(1)  # Giữ chương trình chạy, không tạo thêm tiến trình mới
+        recorder.start()  # 🔹 Start recorder threads
+        print("📡 Đang stream... WebSocket server tại ws://localhost:5000")
+        
+        # Run SocketIO app
+        recorder.socketio.run(recorder.app, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
 
     except KeyboardInterrupt:
         print("\n🛑 Đang thoát...")

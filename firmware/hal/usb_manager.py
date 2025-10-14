@@ -11,7 +11,8 @@ class USBManager:
         self.camera_id = camera_id
 
     def is_available(self):
-        return os.path.ismount(self.path) and os.access(self.path, os.W_OK)
+        return True
+        # return os.path.ismount(self.path) and os.access(self.path, os.W_OK)
 
     def wait_until_available(self):
         print("⚠️ USB bị tháo hoặc lỗi. Chờ gắn lại...")

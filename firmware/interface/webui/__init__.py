@@ -4,7 +4,9 @@ from pathlib import Path
 from .helpers import ensure_dirs
 
 def create_app(cfg: dict) -> Flask:
-    app = Flask(__name__)
+    # Setup static folder
+    static_folder = Path(__file__).parent / 'static'
+    app = Flask(__name__, static_folder=str(static_folder), static_url_path='/static')
     app.config["PICAM_CFG"] = cfg or {}
 
     # Đảm bảo thư mục ghi hình tồn tại

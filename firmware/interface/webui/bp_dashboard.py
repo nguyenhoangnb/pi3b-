@@ -47,9 +47,40 @@ _HTML = r"""
 
 
 <div class="card">
-  <h2>Live view</h2>
-  <img src="/live.mjpg" alt="MJPEG live stream"/>
-  <small>MJPEG stream (~{{video_fps}}fps). Thấp latency, real-time từ recorder.</small>
+  <h2>Camera View</h2>
+  <div class="tab-container">
+    <div class="tab-buttons">
+      <button onclick="switchTab('live')" class="tab-btn active" id="liveBtn">Live Stream</button>
+      <button onclick="switchTab('recorded')" class="tab-btn" id="recordedBtn">Recorded Videos</button>
+    </div>
+    <div id="liveView" class="tab-content active">
+      <canvas id="videoCanvas" style="width:100%; height:480px; background:#000;"></canvas>
+      <small>WebSocket stream (~{{video_fps}}fps). Ultra-low latency, real-time từ recorder.</small>
+    </div>
+    <div id="recordedView" class="tab-content">
+      <div id="playerContainer">
+        <video id="videoPlayer" controls style="width:100%; height:480px; background:#000;">
+          <p>Your browser doesn't support HTML5 video.</p>
+        </video>
+      </div>
+      {% if files %}
+      <div class="video-list">
+        {% for f in files %}
+          {% if f.name.endswith('.mp4') %}
+          <div class="video-item" onclick="playVideo('/download/{{f.name}}')">
+            <div class="video-info">
+              <div class="video-name">{{f.name}}</div>
+              <div class="video-size">{{"%.1f"|format(f.size_mb)}} MB</div>
+            </div>
+          </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted">Không có video nào.</p>
+      {% endif %}
+    </div>
+  </div>
 </div>
 
 
@@ -112,6 +143,7 @@ _FRAME = r"""
 <!doctype html><html><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PiCam WebUI</title>
+<script src="/static/socket.io.js"></script>
 <style>
 :root{--bg:#fff;--fg:#111;--muted:#666;--card:#fafafa;--bd:#e5e7eb;--ok:#16a34a;--warn:#f59e0b;--err:#dc2626;--off:#9ca3af}
 *{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:20px;color:var(--fg);background:var(--bg)}
@@ -126,8 +158,138 @@ table{width:100%;border-collapse:collapse}th,td{padding:8px;border-bottom:1px so
 .danger{color:#fff;background:var(--err);border-color:var(--err)}.danger:hover{filter:brightness(.95)}.small{font-size:.9rem}code{background:#f6f8fa;padding:2px 6px;border-radius:6px}
 video,img{width:100%;max-height:62vh;background:#000;border-radius:12px}
 .links{display:flex;gap:1rem;flex-wrap:wrap;margin-top:.5rem}.links a{color:var(--muted);text-decoration:none}.links a:hover{text-decoration:underline}
-@media (max-width: 768px) {.kv{grid-template-columns:1fr}.row{flex-direction:column}.leds{justify-content:center}}
-</style></head><body><div class="wrap">{{body|safe}}</div></body></html>
+
+/* Tab styles */
+.tab-container { width: 100%; }
+.tab-buttons { margin-bottom: 1rem; }
+.tab-btn { 
+    padding: 8px 16px;
+    margin-right: 8px;
+    border: 1px solid var(--bd);
+    border-radius: 8px;
+    background: #fff;
+    cursor: pointer;
+}
+.tab-btn.active {
+    background: #0066cc;
+    color: white;
+    border-color: #0066cc;
+}
+.tab-content {
+    display: none;
+    margin-top: 1rem;
+}
+.tab-content.active {
+    display: block;
+}
+
+/* Video list styles */
+.video-list {
+    margin-top: 1rem;
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid var(--bd);
+    border-radius: 8px;
+    background: #fff;
+}
+.video-item {
+    padding: 12px;
+    border-bottom: 1px solid var(--bd);
+    cursor: pointer;
+}
+.video-item:last-child {
+    border-bottom: none;
+}
+.video-item:hover {
+    background: #f5f5f5;
+}
+.video-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.video-name {
+    font-weight: 500;
+}
+.video-size {
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+@media (max-width: 768px) {
+    .kv{grid-template-columns:1fr}
+    .row{flex-direction:column}
+    .leds{justify-content:center}
+    .video-info { flex-direction: column; align-items: flex-start; }
+    .video-size { margin-top: 4px; }
+}
+</style>
+<script>
+function switchTab(tab) {
+    // Update buttons
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    document.getElementById(tab + 'Btn').classList.add('active');
+    
+    // Update content
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+    });
+    document.getElementById(tab + 'View').classList.add('active');
+    
+    // Pause video if switching away from recorded tab
+    if (tab === 'live') {
+        const video = document.getElementById('videoPlayer');
+        if (video) {
+            video.pause();
+        }
+    }
+}
+
+function playVideo(url) {
+    const video = document.getElementById('videoPlayer');
+    video.src = url;
+    video.play();
+}
+
+// WebSocket video stream
+function initLiveStream() {
+    const canvas = document.getElementById('videoCanvas');
+    const ctx = canvas.getContext('2d');
+    // Kết nối đến recorder service (cùng domain với webui)
+    const socket = io(window.location.protocol + '//' + window.location.hostname + ':5000');
+    
+    socket.on('connect', () => {
+        console.log('Connected to recorder');
+    });
+    
+    socket.on('video_frame', (data) => {
+        if (!document.getElementById('liveView').classList.contains('active')) {
+            return; // Skip if not on live view tab
+        }
+        const img = new Image();
+        img.onload = () => {
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+        };
+        img.src = 'data:image/jpeg;base64,' + data.frame;
+    });
+    
+    socket.on('disconnect', () => {
+        console.log('Disconnected from recorder');
+    });
+    
+    socket.on('connect_error', (error) => {
+        console.error('Connection error:', error);
+    });
+}
+
+// Initialize live stream when document is loaded
+document.addEventListener('DOMContentLoaded', initLiveStream);
+</script>
+</head><body><div class="wrap">{{body|safe}}</div></body></html>
 """
 
 @bp.get("/")
