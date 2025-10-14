@@ -224,32 +224,52 @@ class PiStreamer:
                 self.micro = Micro()
                 device_index_raw = self.micro.get_first_available_device()
                 if device_index_raw:
-                    # Sử dụng helper function để convert
-                    self.audio_device_index = 6
+                    # Parse device info
+                    # Format: "[1] HD camera: USB Audio (hw:1,0)"
+                    try:
+                        parts = device_index_raw.split(']')[0].split('[')
+                        if len(parts) > 1:
+                            self.audio_device_index = int(parts[1].strip())
+                        else:
+                            self.audio_device_index = None
+                    except:
+                        self.audio_device_index = None
+                    
                     self.audio_dev = self.config['audio']['device']  # Giữ config cho log
                     
                     if self.audio_device_index is None:
-                        print(f"⚠️ Không thể tìm device audio: {device_index_raw}")
+                        print(f"⚠️ Không thể parse device index từ: {device_index_raw}")
                         self.audio_device_index = None
                     else:
                         # Kiểm tra device có hỗ trợ sample rate từ config không
                         p = pyaudio.PyAudio()
                         try:
                             device_info = p.get_device_info_by_index(self.audio_device_index)
-                            supported_rates = [8000, 11025, 16000, 22050, 32000, 44100, 48000, 96000]
-                            default_rate = int(device_info.get('defaultSampleRate', 44100))
+                            print(f"   ↳ Device info: {device_info.get('name')}")
+                            print(f"   ↳ Max input channels: {device_info.get('maxInputChannels')}")
+                            print(f"   ↳ Default sample rate: {device_info.get('defaultSampleRate')}Hz")
                             
-                            # Ưu tiên sample rate từ config nếu được hỗ trợ
-                            config_rate = self.config['audio'].get('sample_rate', 44100)
-                            if config_rate == default_rate:
-                                self.audio_rate = config_rate
+                            # Kiểm tra số channels hỗ trợ
+                            max_channels = int(device_info.get('maxInputChannels', 0))
+                            if max_channels == 0:
+                                print(f"⚠️ Device không hỗ trợ input")
+                                self.audio_device_index = None
                             else:
-                                # Thử các sample rate phổ biến
+                                # Chọn channels phù hợp
+                                config_channels = self.config['audio'].get('channels', 1)
+                                self.audio_channels = min(config_channels, max_channels)
+                                
+                                # Test các sample rate phổ biến
+                                supported_rates = [8000, 11025, 16000, 22050, 32000, 44100, 48000]
+                                default_rate = int(device_info.get('defaultSampleRate', 44100))
+                                
+                                self.audio_rate = None
                                 for rate in supported_rates:
                                     try:
+                                        # Test với input stream
                                         test_stream = p.open(
                                             format=pyaudio.paInt16,
-                                            channels=2,
+                                            channels=self.audio_channels,
                                             rate=rate,
                                             input=True,
                                             input_device_index=self.audio_device_index,
@@ -258,22 +278,32 @@ class PiStreamer:
                                         )
                                         test_stream.close()
                                         self.audio_rate = rate
-                                        print(f"   ✅ Tìm thấy sample rate phù hợp: {rate}Hz")
+                                        print(f"   ✅ Tìm thấy cấu hình phù hợp: {rate}Hz, {self.audio_channels}ch")
                                         break
-                                    except:
+                                    except Exception as e:
                                         continue
-                                else:
+                                
+                                if self.audio_rate is None:
                                     print(f"⚠️ Không tìm được sample rate phù hợp, dùng mặc định {default_rate}Hz")
                                     self.audio_rate = default_rate
+                                    self.audio_channels = 1  # Fallback to mono
+                        except Exception as e:
+                            print(f"⚠️ Lỗi kiểm tra device: {e}")
+                            self.audio_device_index = None
                         finally:
                             p.terminate()
                 else:
                     self.audio_device_index = None
                     print("⚠️ Không tìm thấy thiết bị audio.")
                 
-                # Cấu hình audio cuối cùng
-                self.audio_channels = self.config['audio'].get('channels', 1)
-                print(f"   ↳ Audio sample rate: {self.audio_rate}Hz")
+                # Kiểm tra cuối cùng
+                if self.audio_device_index is not None and hasattr(self, 'audio_rate'):
+                    print(f"   ↳ Audio config: {self.audio_channels}ch @ {self.audio_rate}Hz")
+                else:
+                    self.audio_device_index = None
+                    print("   ✖️ Audio: Không thể khởi tạo")
+            else:
+                self.audio_device_index = None
             
             # Cấu hình lưu trữ
             self.output_dir = self.config['paths']['record_root']
