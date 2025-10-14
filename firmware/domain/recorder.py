@@ -183,6 +183,8 @@ class PiStreamer:
                 else:
                     self.audio_device_index = None
                     print("⚠️ Không tìm thấy thiết bị audio.")
+                self.audio_rate = self.config['audio'].get('sample_rate', 48000)
+                self.audio_channels = self.config['audio'].get('channels', 1)
             
             # Cấu hình lưu trữ
             self.output_dir = self.config['paths']['record_root']
