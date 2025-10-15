@@ -287,34 +287,49 @@ class PiStreamer:
                                 config_channels = self.config['audio'].get('channels', 1)
                                 self.audio_channels = min(config_channels, max_channels)
                                 
-                                # Test các sample rate phổ biến
-                                supported_rates = [8000, 11025, 16000, 22050, 32000, 44100, 48000]
+                                # Lấy default sample rate từ thiết bị
                                 default_rate = int(device_info.get('defaultSampleRate', 44100))
+                                
+                                # Thử default rate trước (thường là rate device hỗ trợ tốt nhất)
+                                supported_rates = [default_rate, 44100, 48000, 16000, 22050, 32000, 8000, 11025]
+                                # Loại bỏ duplicate
+                                supported_rates = list(dict.fromkeys(supported_rates))
                                 
                                 self.audio_rate = None
                                 for rate in supported_rates:
-                                    try:
-                                        # Test với input stream
-                                        test_stream = p.open(
-                                            format=pyaudio.paInt16,
-                                            channels=self.audio_channels,
-                                            rate=rate,
-                                            input=True,
-                                            input_device_index=self.audio_device_index,
-                                            frames_per_buffer=1024,
-                                            start=False
-                                        )
-                                        test_stream.close()
-                                        self.audio_rate = rate
-                                        print(f"   ✅ Tìm thấy cấu hình phù hợp: {rate}Hz, {self.audio_channels}ch")
+                                    # Thử với cả mono và stereo
+                                    for test_channels in [self.audio_channels, 1, 2]:
+                                        if test_channels > max_channels:
+                                            continue
+                                        try:
+                                            # Test với input stream
+                                            test_stream = p.open(
+                                                format=pyaudio.paInt16,
+                                                channels=test_channels,
+                                                rate=rate,
+                                                input=True,
+                                                input_device_index=self.audio_device_index,
+                                                frames_per_buffer=1024,
+                                                start=False
+                                            )
+                                            test_stream.close()
+                                            self.audio_rate = rate
+                                            self.audio_channels = test_channels
+                                            print(f"   ✅ Tìm thấy cấu hình phù hợp: {rate}Hz, {test_channels}ch")
+                                            break
+                                        except Exception as e:
+                                            # Debug: in ra lỗi cụ thể
+                                            if "Invalid sample rate" in str(e):
+                                                pass  # Rate không hỗ trợ, thử rate khác
+                                            continue
+                                    if self.audio_rate is not None:
                                         break
-                                    except Exception as e:
-                                        continue
                                 
                                 if self.audio_rate is None:
-                                    print(f"⚠️ Không tìm được sample rate phù hợp, dùng mặc định {default_rate}Hz")
-                                    self.audio_rate = default_rate
-                                    self.audio_channels = 1  # Fallback to mono
+                                    print(f"⚠️ Không tìm được sample rate phù hợp")
+                                    print(f"   ↳ Thử các rate: {supported_rates}")
+                                    print(f"   ↳ Default rate của device: {default_rate}Hz")
+                                    self.audio_device_index = None
                         except Exception as e:
                             print(f"⚠️ Lỗi kiểm tra device: {e}")
                             self.audio_device_index = None
