@@ -502,6 +502,10 @@ class PiStreamer:
             print("⚠️ Không có file video để ghép.")
             return
 
+        # Đợi file được flush hoàn toàn
+        time.sleep(0.5)
+        
+        merge_success = False
         try:
             # Sử dụng ffmpeg_merge_video_audio để ghép
             if os.path.exists(audio_file):
@@ -525,28 +529,51 @@ class PiStreamer:
                 )
                 print(f"✅ Convert thành công: {mp4_file} (video only)")
             
-            # Cleanup source files sau khi ghép thành công
-            try:
-                if os.path.exists(video_file):
-                    os.remove(video_file)
-                    print(f"   ↳ Đã xóa file video: {video_file}")
-                if os.path.exists(audio_file):
-                    os.remove(audio_file)
-                    print(f"   ↳ Đã xóa file audio: {audio_file}")
-            except Exception as e:
-                print(f"⚠️ Lỗi xoá file nguồn: {e}")
-                print(f"   ↳ Video exists: {os.path.exists(video_file)}")
-                print(f"   ↳ Audio exists: {os.path.exists(audio_file)}")
+            merge_success = True
                 
         except Exception as e:
             print(f"⚠️ Lỗi ghép MP4: {e}")
-            # Cleanup on error
+            # Xóa file MP4 lỗi nếu có
             if os.path.exists(mp4_file):
                 try:
                     os.remove(mp4_file)
                     print(f"   ↳ Đã xóa file MP4 lỗi: {mp4_file}")
+                except Exception as e2:
+                    print(f"⚠️ Lỗi xóa file MP4: {e2}")
+        
+        # LUÔN thử xóa source files (dù merge thành công hay thất bại)
+        finally:
+            # Đợi thêm chút để đảm bảo ffmpeg đã release file
+            time.sleep(0.3)
+            
+            deleted_files = []
+            failed_files = []
+            
+            # Xóa video file
+            if os.path.exists(video_file):
+                try:
+                    os.remove(video_file)
+                    deleted_files.append(f"video: {os.path.basename(video_file)}")
                 except Exception as e:
-                    print(f"⚠️ Lỗi xóa file MP4: {e}")
+                    failed_files.append(f"video: {e}")
+            
+            # Xóa audio file
+            if os.path.exists(audio_file):
+                try:
+                    os.remove(audio_file)
+                    deleted_files.append(f"audio: {os.path.basename(audio_file)}")
+                except Exception as e:
+                    failed_files.append(f"audio: {e}")
+            
+            # Report cleanup status
+            if deleted_files:
+                print(f"   ↳ Đã xóa: {', '.join(deleted_files)}")
+            if failed_files:
+                print(f"   ⚠️ Không xóa được: {', '.join(failed_files)}")
+            
+            # Nếu không có file MP4 sau merge thành công, cảnh báo
+            if merge_success and not os.path.exists(mp4_file):
+                print(f"   ⚠️ Cảnh báo: File MP4 không tồn tại sau merge!")
 
     def _audio_thread(self):
         """Thread đọc và ghi audio độc lập"""
@@ -743,11 +770,14 @@ class PiStreamer:
 
             # Check if need new segment
             if self.segment_manager.should_start_new():
+                # Release video writer và đợi file flush
                 current_writer.release()
+                time.sleep(0.5)  # Đợi OS flush file ra disk
+                
                 self.segment_manager.mark_complete('video')
                 
-                # Đợi audio hoàn thành và bắt đầu segment mới
-                if self.segment_manager.wait_for_merge(timeout=1.0):
+                # Đợi audio hoàn thành và ghép file
+                if self.segment_manager.wait_for_merge(timeout=2.0):
                     self._mux_to_mp4()
                     
                 current_segment = self.segment_manager.start_new_segment()
@@ -760,11 +790,14 @@ class PiStreamer:
 
             time.sleep(1 / self.video_fps)  # Control FPS
 
-        # Final segment
+        # Final segment - release và flush
         current_writer.release()
+        time.sleep(0.5)  # Đợi OS flush file ra disk
+        
         self.segment_manager.mark_complete('video')
-        if self.segment_manager.wait_for_merge(timeout=1.0):
+        if self.segment_manager.wait_for_merge(timeout=2.0):
             self._mux_to_mp4()
+        
         cap.release()
         print("✅ Video thread stopped.")
 
