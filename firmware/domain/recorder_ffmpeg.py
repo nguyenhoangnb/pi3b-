@@ -282,48 +282,9 @@ class FFmpegRecorder:
         else:
             print(f"   ↳ Audio: Disabled (video only)")
         
-        # Build video filter with timestamp and GPS overlay
-        video_filters = []
-        
-        # 1. Scale and format conversion
-        video_filters.append('scale=640:480:flags=bicubic,format=yuv420p')
-        
-        # 2. Add timestamp overlay
-        timestamp_text = r"%{localtime\:%Y-%m-%d %H\\\:%M\\\:%S}"
-        video_filters.append(
-            f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:"
-            f"text='{timestamp_text}':"
-            f"fontcolor=white:fontsize=20:box=1:boxcolor=black@0.5:"
-            f"boxborderw=5:x=10:y=10"
-        )
-        
-        # 3. Add GPS coordinates overlay (if available)
-        if self.gnss_available and hasattr(self, 'gnss'):
-            gps_data = self.gnss.get_location()
-            if gps_data.get('latitude') and gps_data.get('longitude'):
-                lat = gps_data['latitude']
-                lon = gps_data['longitude']
-                sats = gps_data.get('num_sats', 0)
-                gps_text = f"GPS: {lat:.6f}, {lon:.6f} ({sats} sats)"
-                video_filters.append(
-                    f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:"
-                    f"text='{gps_text}':"
-                    f"fontcolor=yellow:fontsize=16:box=1:boxcolor=black@0.5:"
-                    f"boxborderw=5:x=10:y=h-th-10"
-                )
-                print(f"   ↳ GPS: {lat:.6f}, {lon:.6f}")
-            else:
-                # Show "No GPS Fix" if GPS is enabled but no fix yet
-                video_filters.append(
-                    f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:"
-                    f"text='GPS: No Fix':"
-                    f"fontcolor=red:fontsize=16:box=1:boxcolor=black@0.5:"
-                    f"boxborderw=5:x=10:y=h-th-10"
-                )
-                print(f"   ↳ GPS: Waiting for fix...")
-        
-        # Combine all filters
-        filter_string = ','.join(video_filters)
+        # Build video filter - TEMPORARY: Simple filter without overlay for testing
+        # TODO: Add back timestamp and GPS overlay after camera works
+        filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
         
         # Video codec settings (force Main profile for browser compatibility)
         cmd.extend([
