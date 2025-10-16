@@ -23,9 +23,9 @@ bp = Blueprint("liveview", __name__)
 
 # HLS stream URL - use request host to support both localhost and remote access
 def get_hls_url():
-    """Get HLS URL based on request host"""
-    host = request.host.split(':')[0]  # Get host without port
-    return f"http://{host}:5000/hls/stream.m3u8"
+    """Get HLS URL based on request host - use proxy route on same port"""
+    # Use proxy route on port 8080 instead of direct port 5000
+    return f"http://{request.host}/hls/stream.m3u8"
 
 # ============================================================
 # ROUTES
@@ -266,4 +266,63 @@ def stream_health():
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Cache-Control'] = 'no-store, no-cache'
     response.headers['X-Frame-Options'] = 'SAMEORIGIN'
+    return response
+
+# ============================================================
+# HLS PROXY ROUTES - Forward from port 8080 to recorder port 5000
+# ============================================================
+
+@bp.get("/hls/<path:filename>")
+@validate_request
+def hls_proxy(filename):
+    """Proxy HLS files from recorder service to avoid opening port 5000"""
+    import requests
+    
+    # Validate filename to prevent path traversal
+    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename):
+        abort(400, "Invalid filename")
+    
+    try:
+        # Forward request to recorder service on localhost:5000
+        recorder_url = f"http://localhost:5000/hls/{filename}"
+        resp = requests.get(recorder_url, timeout=5, stream=True)
+        
+        # Determine content type
+        if filename.endswith('.m3u8'):
+            content_type = 'application/vnd.apple.mpegurl'
+        elif filename.endswith('.ts'):
+            content_type = 'video/mp2t'
+        else:
+            content_type = resp.headers.get('Content-Type', 'application/octet-stream')
+        
+        # Create response with appropriate headers
+        response = Response(
+            resp.content,
+            status=resp.status_code,
+            mimetype=content_type
+        )
+        
+        # Add CORS headers for HLS
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        
+        # Cache control for HLS segments
+        if filename.endswith('.m3u8'):
+            response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        else:
+            response.headers['Cache-Control'] = 'public, max-age=3600'
+        
+        return response
+        
+    except requests.exceptions.RequestException as e:
+        abort(502, f"Recorder service unavailable: {str(e)}")
+
+@bp.options("/hls/<path:filename>")
+def hls_proxy_options(filename):
+    """Handle CORS preflight for HLS"""
+    response = Response()
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     return response
