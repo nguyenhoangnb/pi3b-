@@ -14,7 +14,7 @@ fi
 
 echo "🛑 Dừng tất cả service trong $SERVICES_FILE ..."
 
-# Đọc từng dòng trong file và dừng service
+# Đọc từng dòng trong file, dừng service và disable để không tự chạy lại khi boot
 while IFS= read -r SERVICE_NAME || [ -n "$SERVICE_NAME" ]; do
     # Bỏ qua dòng trống hoặc dòng comment (#)
     [[ -z "$SERVICE_NAME" || "$SERVICE_NAME" =~ ^# ]] && continue
@@ -27,6 +27,15 @@ while IFS= read -r SERVICE_NAME || [ -n "$SERVICE_NAME" ]; do
     else
         echo "   ✅ Đã dừng $SERVICE_NAME"
     fi
+
+    echo "→ Đang tắt chế độ tự khởi động: $SERVICE_NAME"
+    sudo systemctl disable "$SERVICE_NAME"
+    if systemctl is-enabled --quiet "$SERVICE_NAME"; then
+        echo "   ❌ Không thể disable $SERVICE_NAME"
+    else
+        echo "   ✅ Đã disable $SERVICE_NAME"
+    fi
+
 done < "$SERVICES_FILE"
 
-echo "✅ Hoàn tất dừng tất cả service."
+echo "✅ Hoàn tất dừng và disable tất cả service."
