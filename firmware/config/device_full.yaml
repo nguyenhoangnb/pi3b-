@@ -27,7 +27,7 @@ storage:
 video:
   v4l2_device: "/dev/video0"
   v4l2_format: "640x480"
-  v4l2_fps: 15
+  v4l2_fps: 30  # Raspberry Pi camera supports 30fps @ 640x480
 audio:
   device: "plughw:1,0"  # USB Audio Device (card 1) - use hw instead of plughw
   sample_rate: 48000

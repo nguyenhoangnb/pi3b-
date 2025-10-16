@@ -257,11 +257,11 @@ class FFmpegRecorder:
         video_size = self.config['video']['v4l2_format']  # "640x480"
         video_fps = self.config['video']['v4l2_fps']
         
-        # Build FFmpeg command - use MJPEG input with proper chroma conversion
+        # Build FFmpeg command - Raspberry Pi camera uses YUYV format
         cmd = [
             'ffmpeg',
             '-f', 'v4l2',
-            '-input_format', 'mjpeg',
+            '-input_format', 'yuyv422',  # Raspberry Pi camera format
             '-video_size', video_size,
             '-framerate', str(video_fps),
             '-i', video_dev,
