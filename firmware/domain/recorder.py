@@ -576,7 +576,7 @@ class PiStreamer:
                 print(f"   ⚠️ Cảnh báo: File MP4 không tồn tại sau merge!")
 
     def _audio_thread(self):
-        """Thread đọc và ghi audio độc lập"""
+        """Thread đọc và ghi audio độc lập với auto-reconnect"""
         if self.audio_device_index is None:
             print("⚠️ Không có thiết bị audio, audio thread không chạy")
             return
@@ -586,23 +586,39 @@ class PiStreamer:
         FORMAT = pyaudio.paInt16
         CHANNELS = getattr(self, 'audio_channels', 1)
         RATE = getattr(self, 'audio_rate', 48000)
-
-        p = pyaudio.PyAudio()
-        try:
-            stream = p.open(
-                format=FORMAT,
-                channels=CHANNELS,
-                rate=RATE,
-                frames_per_buffer=CHUNK,
-                input=True,
-                input_device_index=self.audio_device_index  # Sử dụng device đã detect
-            )
-            print(f"✅ Khởi tạo audio stream thành công ({RATE}Hz, {CHANNELS} channels)")
-        except Exception as e:
-            print(f"⚠️ Không thể mở audio stream: {e}")
+        
+        reconnect_attempts = 0
+        max_reconnect = 3
+        stream = None
+        p = None
+        
+        def init_audio():
+            """Khởi tạo hoặc khởi tạo lại audio stream"""
+            try:
+                new_p = pyaudio.PyAudio()
+                new_stream = new_p.open(
+                    format=FORMAT,
+                    channels=CHANNELS,
+                    rate=RATE,
+                    frames_per_buffer=CHUNK,
+                    input=True,
+                    input_device_index=self.audio_device_index
+                )
+                return new_p, new_stream
+            except Exception as e:
+                if new_p:
+                    new_p.terminate()
+                return None, None
+        
+        # Khởi tạo audio stream lần đầu
+        p, stream = init_audio()
+        
+        if stream is None:
+            print(f"⚠️ Không thể mở audio stream")
             print("   ↳ Audio recording sẽ bị tắt, chỉ ghi video")
-            p.terminate()
             return
+        
+        print(f"✅ Khởi tạo audio stream thành công ({RATE}Hz, {CHANNELS} channels)")
 
         # Đảm bảo có SegmentManager và segment đã được bắt đầu
         if not hasattr(self, 'segment_manager'):
@@ -625,9 +641,45 @@ class PiStreamer:
         audio_frames = []  # Initialize array to store frames
 
         while not self._stop_flag:
+            # Kiểm tra stream còn hoạt động không
+            if stream is None or not stream.is_active():
+                print("⚠️ Audio stream không khả dụng, thử reconnect...")
+                
+                # Đóng stream hiện tại
+                try:
+                    if stream:
+                        stream.stop_stream()
+                        stream.close()
+                    if p:
+                        p.terminate()
+                    time.sleep(1)
+                except:
+                    pass
+                
+                # Thử reconnect
+                reconnect_attempts += 1
+                if reconnect_attempts > max_reconnect:
+                    print(f"❌ Đã thử reconnect audio {max_reconnect} lần thất bại, dừng audio thread")
+                    break
+                
+                print(f"🔄 Đang reconnect audio... (lần {reconnect_attempts}/{max_reconnect})")
+                p, stream = init_audio()
+                
+                if stream is None:
+                    print("❌ Reconnect audio thất bại, thử lại sau 2 giây...")
+                    time.sleep(2)
+                    continue
+                else:
+                    print("✅ Reconnect audio thành công!")
+                    reconnect_attempts = 0
+                    continue
+            
             try:
-                data = stream.read(CHUNK)  # Đọc chunk data từ stream
+                data = stream.read(CHUNK, exception_on_overflow=False)
                 audio_frames.append(data)
+                
+                # Reset reconnect counter khi đọc thành công
+                reconnect_attempts = 0
                 
                 # Kiểm tra segment mới
                 if self.segment_manager.should_start_new():
@@ -649,19 +701,36 @@ class PiStreamer:
                     audio_frames = []  # Reset frame buffer
                     
             except Exception as e:
-                print(f"⚠️ Lỗi đọc audio: {e}")
-                time.sleep(0.1)
+                # Kiểm tra lỗi stream closed
+                if "Stream closed" in str(e) or "errno -9988" in str(e).lower():
+                    print(f"⚠️ Audio stream bị đóng: {e}")
+                    stream = None  # Force reconnect ở lần lặp tiếp theo
+                    time.sleep(0.5)
+                else:
+                    print(f"⚠️ Lỗi đọc audio: {e}")
+                    time.sleep(0.1)
 
         # Ghi nốt phần cuối
-        if audio_frames:
-            current_writer.writeframes(b''.join(audio_frames))
-        current_writer.close()
+        try:
+            if audio_frames and current_writer:
+                current_writer.writeframes(b''.join(audio_frames))
+            if current_writer:
+                current_writer.close()
+        except Exception as e:
+            print(f"⚠️ Lỗi đóng audio writer: {e}")
+            
         self.segment_manager.mark_complete('audio')
         
         # Cleanup
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
+        try:
+            if stream:
+                stream.stop_stream()
+                stream.close()
+            if p:
+                p.terminate()
+        except Exception as e:
+            print(f"⚠️ Lỗi cleanup audio: {e}")
+            
         print("✅ Audio thread stopped.")
 
     def _video_thread(self):
