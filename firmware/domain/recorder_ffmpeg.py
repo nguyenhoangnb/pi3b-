@@ -167,36 +167,38 @@ class FFmpegRecorder:
                 "plughw:2,0",  # USB Audio Device
                 "hw:1,0",      # HD camera direct
                 "hw:2,0",      # USB Audio direct
-                "plughw:0,0",  # Headphones (probably no input)
             ]
             
             print("🔍 Testing audio devices...")
             
             for alsa_device in test_devices:
-                # Quick test with FFmpeg
+                # Quick test with arecord (more reliable than FFmpeg test)
                 test_cmd = [
-                    'ffmpeg',
-                    '-f', 'alsa',
-                    '-channels', '1',
-                    '-sample_rate', '48000',
-                    '-i', alsa_device,
-                    '-t', '0.5',
-                    '-f', 'null',
-                    '-'
+                    'arecord',
+                    '-D', alsa_device,
+                    '-f', 'S16_LE',
+                    '-r', '48000',
+                    '-c', '1',
+                    '-d', '0.5',  # 0.5 seconds
+                    '/tmp/audio_test.wav'
                 ]
                 
                 try:
                     result = subprocess.run(
                         test_cmd,
                         capture_output=True,
-                        timeout=3
+                        timeout=2
                     )
                     
                     if result.returncode == 0:
                         print(f"✅ Audio device verified: {alsa_device}")
+                        # Clean up test file
+                        try:
+                            Path('/tmp/audio_test.wav').unlink()
+                        except:
+                            pass
                         return alsa_device
                     else:
-                        # Check if it's just "no such device" vs I/O error
                         stderr = result.stderr.decode('utf-8', errors='ignore')
                         if 'No such device' not in stderr and 'cannot find card' not in stderr:
                             print(f"⚠️ {alsa_device}: {stderr.split(chr(10))[0][:60]}")
