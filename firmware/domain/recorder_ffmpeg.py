@@ -152,62 +152,71 @@ class FFmpegRecorder:
                 return dev
         
         raise Exception("No camera found")
-    
+
     def get_audio_device(self):
-        """Get audio device in ALSA format"""
-        if not self.config['capabilities'].get('audio', False):
+        """Get audio device in ALSA format with supported params"""
+        if not self.config['audio'].get('enabled', False):
             print("ℹ️ Audio disabled in config")
             return None
         
-        try:
-            # List of devices to test (prioritize USB devices since card 0 is headphones only)
-            # Card 1: HD camera microphone, Card 2: USB Audio Device
-            test_devices = [
-                "plughw:1,0",  # HD camera microphone (most likely)
-                "plughw:2,0",  # USB Audio Device
-                "hw:1,0",      # HD camera direct
-                "hw:2,0",      # USB Audio direct
-            ]
-            
-            print("🔍 Testing audio devices...")
-            for alsa_device in test_devices:
+        # NEW: Test devices (prefer hw for raw access)
+        test_devices = [
+            "hw:1,0",      # HD camera direct (priority)
+            "plughw:1,0",  # HD camera plugin
+            "hw:2,0",      # USB Audio direct
+            "plughw:2,0",  # USB Audio plugin
+        ]
+        
+        # NEW: Common param combos to test (USB mics often 44.1kHz stereo)
+        test_params = [
+            {'rate': 44100, 'channels': 2},
+            {'rate': 48000, 'channels': 2},
+            {'rate': 44100, 'channels': 1},
+            {'rate': 48000, 'channels': 1},
+        ]
+        
+        print("🔍 Testing audio devices...")
+        for alsa_device in test_devices:
+            for params in test_params:
                 test_cmd = [
                     'arecord',
                     '-D', alsa_device,
                     '-f', 'S16_LE',
-                    '-r', '48000',
-                    '-c', '1',
-                    '-d', '1',  # 1 second (arecord only accepts integer seconds)
+                    '-r', str(params['rate']),
+                    '-c', str(params['channels']),
+                    '-d', '1',  # 1 second test
                     '/tmp/audio_test.wav'
                 ]
                 try:
                     result = subprocess.run(
                         test_cmd,
                         capture_output=True,
-                        timeout=2
+                        timeout=3  # Slightly longer for USB init
                     )
                     if result.returncode == 0:
-                        print(f"✅ Audio device verified: {alsa_device}")
-                        # Clean up test file
+                        print(f"✅ Audio device verified: {alsa_device} ({params['channels']}ch @ {params['rate']}Hz)")
+                        # Clean up
                         try:
                             Path('/tmp/audio_test.wav').unlink()
                         except:
                             pass
-                        return alsa_device
+                        # NEW: Return dict for FFmpeg
+                        return {
+                            'device': alsa_device,
+                            'rate': params['rate'],
+                            'channels': params['channels']
+                        }
                     else:
                         stderr = result.stderr.decode('utf-8', errors='ignore')
-                        if 'No such device' not in stderr and 'cannot find card' not in stderr:
-                            print(f"⚠️ {alsa_device}: {stderr.split(chr(10))[0][:60]}")
+                        if 'No such device' not in stderr and 'cannot find card' not in stderr and len(stderr) > 0:
+                            print(f"⚠️ {alsa_device} ({params['rate']}Hz/{params['channels']}ch): {stderr.split('\n')[0][:60]}")
                 except subprocess.TimeoutExpired:
-                    print(f"⏱️ {alsa_device}: Timeout")
+                    print(f"⏱️ {alsa_device} ({params['rate']}Hz/{params['channels']}ch): Timeout")
                 except Exception:
                     pass
-            print("⚠️ No working audio device found")
-            return None
-        except Exception as e:
-            print(f"⚠️ Audio device error: {e}")
+        print("⚠️ No working audio device found—falling back to video-only")
         return None
-    
+
     def start_recording(self):
         """Start FFmpeg recording + HLS streaming"""
         
@@ -240,86 +249,100 @@ class FFmpegRecorder:
             except:
                 pass
         
-        # Get devices
+        # Get devices - UPDATED: Audio now returns dict or None
         try:
             video_dev = self.get_video_device()
-            audio_dev = self.get_audio_device()
+            audio_info = self.get_audio_device()
         except Exception as e:
             print(f"❌ Device error: {e}")
             return False
+        
+        # NEW: Quick device lock check/kill
+        devs_to_check = [video_dev]
+        if audio_info:
+            devs_to_check.append(audio_info['device'])
+        for dev in devs_to_check:
+            try:
+                if subprocess.run(['fuser', dev], capture_output=True).returncode == 0:
+                    print(f"⚠️ Device {dev} in use—killing processes")
+                    subprocess.run(['fuser', '-k', dev])
+            except:
+                pass
         
         # Parse video settings
         video_size = self.config['video']['v4l2_format']  # "640x480"
         video_fps = self.config['video']['v4l2_fps']
         
-        # Build FFmpeg command - Raspberry Pi camera uses YUYV format
+        # Build FFmpeg command
         cmd = [
             'ffmpeg',
             '-f', 'v4l2',
-            '-input_format', 'yuyv422',  # Raspberry Pi camera format
+            '-input_format', 'yuyv422',
             '-video_size', video_size,
             '-framerate', str(video_fps),
             '-i', video_dev,
+            # NEW: Low-latency for USB video
+            '-fflags', 'nobuffer',
+            '-flags', 'low_delay',
         ]
         
         # Add audio input if available
-        if audio_dev:
-            audio_rate = self.config['audio'].get('sample_rate', 48000)
-            audio_channels = self.config['audio'].get('channels', 1)
-            
+        if audio_info:
             cmd.extend([
                 '-f', 'alsa',
-                '-channels', str(audio_channels),
-                '-sample_rate', str(audio_rate),
-                '-i', audio_dev,
+                '-channels', str(audio_info['channels']),
+                '-sample_rate', str(audio_info['rate']),
+                '-i', audio_info['device'],
+                # NEW: Thread queue for Pi limits
+                '-thread_queue_size', '512',
             ])
-            print(f"   ↳ Audio: {audio_dev} ({audio_channels}ch @ {audio_rate}Hz)")
+            print(f"   ↳ Audio: {audio_info['device']} ({audio_info['channels']}ch @ {audio_info['rate']}Hz)")
         else:
             print(f"   ↳ Audio: Disabled (video only)")
         
-        # Build video filter - TEMPORARY: Simple filter without overlay for testing
-        # TODO: Add back timestamp and GPS overlay after camera works
+        # Build video filter
         filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
         
-        # Video codec settings (force Main profile for browser compatibility)
+        # Video codec settings
         cmd.extend([
             '-vf', filter_string,
             '-c:v', 'libx264',
-            '-preset', 'veryfast',  # veryfast is better quality than ultrafast
+            '-preset', 'veryfast',
             '-tune', 'zerolatency',
-            '-profile:v', 'main',  # Main profile (compatible with MSE/HLS.js)
+            '-profile:v', 'main',
             '-level', '3.1',
-            '-x264-params', 'nal-hrd=cbr',  # Constant bitrate for HLS
-            '-g', str(video_fps * 2),  # Keyframe every 2 seconds
-            '-keyint_min', str(video_fps * 2),  # Minimum keyframe interval
+            '-x264-params', 'nal-hrd=cbr',
+            '-g', str(video_fps * 2),
+            '-keyint_min', str(video_fps * 2),
             '-sc_threshold', '0',
             '-b:v', '1200k',
             '-maxrate', '1500k',
             '-bufsize', '3000k',
-            '-force_key_frames', f'expr:gte(t,n_forced*{2})',  # Force keyframes every 2s
-            '-pix_fmt', 'yuv420p',  # Explicitly set pixel format for output
+            '-force_key_frames', f'expr:gte(t,n_forced*{2})',
+            '-pix_fmt', 'yuv420p',
         ])
         
         # Audio codec if available
-        if audio_dev:
+        if audio_info:
             cmd.extend([
                 '-c:a', 'aac',
                 '-b:a', '128k',
+                # NEW: A/V sync
+                '-async', '1',
             ])
         
-        # Use tee muxer to output to both MP4 segments and HLS with single encode
-        # This ensures both outputs have the same codec profile
+        # Tee muxer setup
         timestamp_pattern = f"{self.output_dir}/%Y%m%d_%H%M%S_cam0.mp4"
         
         cmd.extend([
             '-f', 'tee',
-            '-map', '0:v',  # Map video stream
+            '-map', '0:v',  # Video map
         ])
         
-        if audio_dev:
-            cmd.extend(['-map', '1:a'])  # Map audio stream if available
+        if audio_info:
+            cmd.extend(['-map', '1:a'])  # Audio map
         
-        # Tee output: MP4 segments | HLS stream
+        # Tee output
         tee_output = (
             f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
             f"reset_timestamps=1:strftime=1]{timestamp_pattern}|"
@@ -338,13 +361,13 @@ class FFmpegRecorder:
         print(f"   ↳ Segment: {self.segment_seconds}s")
         
         try:
-            # Log full command for debugging
+            # Log command
             print(f"   ↳ Command: {' '.join(cmd)}")
             
             self.ffmpeg_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,  # Combine stderr with stdout
+                stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 universal_newlines=True,
                 bufsize=1
@@ -352,32 +375,59 @@ class FFmpegRecorder:
             
             print(f"✅ FFmpeg started (PID: {self.ffmpeg_process.pid})")
             
-            # Start a thread to monitor FFmpeg output
-            import threading
+            # ENHANCED: Monitoring with queue for non-blocking
+            output_queue = queue.Queue()
             def monitor_ffmpeg():
-                for line in self.ffmpeg_process.stdout:
-                    if 'error' in line.lower() or 'failed' in line.lower():
-                        print(f"⚠️ FFmpeg: {line.strip()}")
+                try:
+                    for line in iter(self.ffmpeg_process.stdout.readline, ''):
+                        output_queue.put(line)
+                        lower_line = line.lower()
+                        if any(word in lower_line for word in ['error', 'failed', 'no such device', 'invalid argument', 'ioctl', 'demuxing']):
+                            print(f"⚠️ FFmpeg: {line.strip()}")
+                except:
+                    pass
             
             monitor_thread = threading.Thread(target=monitor_ffmpeg, daemon=True)
             monitor_thread.start()
             
-            # Start storage monitoring thread
+            # Drain non-errors (silent by default)
+            def drain_output():
+                while self.is_running():
+                    try:
+                        line = output_queue.get(timeout=1)
+                        # Uncomment for verbose: print(line.strip())
+                    except queue.Empty:
+                        continue
+            
+            drain_thread = threading.Thread(target=drain_output, daemon=True)
+            drain_thread.start()
+            
+            # Storage monitor
             self._storage_monitor_thread = threading.Thread(target=self._storage_monitor_loop, daemon=True)
             self._storage_monitor_thread.start()
             
-            # Wait a bit to see if FFmpeg starts successfully
-            time.sleep(1)
-            if self.ffmpeg_process.poll() is not None:
-                print(f"❌ FFmpeg exited immediately with code {self.ffmpeg_process.returncode}")
-                return False
+            # ENHANCED: Retry on early exit
+            max_retries = 3
+            for attempt in range(max_retries):
+                time.sleep(2)  # USB init time
+                if self.ffmpeg_process.poll() is None:
+                    break
+                print(f"⚠️ FFmpeg exited early (attempt {attempt+1}/{max_retries}): code {self.ffmpeg_process.returncode}")
+                if attempt < max_retries - 1:
+                    print("🔄 Retrying...")
+                    self.ffmpeg_process = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL, universal_newlines=True, bufsize=1
+                    )
+                    print(f"✅ Retry FFmpeg started (PID: {self.ffmpeg_process.pid})")
+                else:
+                    return False
             
             self.led_control.on()
             return True
             
         except Exception as e:
             print(f"❌ Failed to start FFmpeg: {e}")
-            import traceback
             traceback.print_exc()
             return False
     
