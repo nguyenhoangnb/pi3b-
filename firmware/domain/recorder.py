@@ -554,11 +554,11 @@ class PiStreamer:
             print("⚠️ Không có thiết bị audio, audio thread không chạy")
             return
 
-        # Cấu hình cố định để đảm bảo tính ổn định
+        # Cấu hình từ device detection
         CHUNK = 1024
         FORMAT = pyaudio.paInt16
-        CHANNELS = 1
-        RATE = 48000
+        CHANNELS = getattr(self, 'audio_channels', 1)
+        RATE = getattr(self, 'audio_rate', 48000)
 
         p = pyaudio.PyAudio()
         try:
@@ -568,11 +568,12 @@ class PiStreamer:
                 rate=RATE,
                 frames_per_buffer=CHUNK,
                 input=True,
-                # input_device_index=self.audio_device_index
+                input_device_index=self.audio_device_index  # Sử dụng device đã detect
             )
             print(f"✅ Khởi tạo audio stream thành công ({RATE}Hz, {CHANNELS} channels)")
         except Exception as e:
             print(f"⚠️ Không thể mở audio stream: {e}")
+            print("   ↳ Audio recording sẽ bị tắt, chỉ ghi video")
             p.terminate()
             return
 
@@ -674,13 +675,14 @@ class PiStreamer:
         )
 
         while not self._stop_flag:
-            ret, frame = cap.read()
-            if not ret:
-                print("⚠️ Không đọc được frame, thử reconnect...")
+            # Kiểm tra camera còn hoạt động không
+            if cap is None or not cap.isOpened():
+                print("⚠️ Camera không khả dụng, thử reconnect...")
                 
-                # Đóng camera hiện tại
+                # Đóng camera hiện tại nếu có
                 try:
-                    cap.release()
+                    if cap is not None:
+                        cap.release()
                     time.sleep(1)  # Đợi driver reset
                 except:
                     pass
@@ -703,6 +705,13 @@ class PiStreamer:
                     print("✅ Reconnect camera thành công!")
                     reconnect_attempts = 0  # Reset counter khi thành công
                     continue
+            
+            # Đọc frame
+            ret, frame = cap.read()
+            if not ret:
+                print("⚠️ Không đọc được frame")
+                time.sleep(0.5)
+                continue
 
             # Reset reconnect counter khi đọc frame thành công
             reconnect_attempts = 0

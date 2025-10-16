@@ -21,35 +21,18 @@ ALLOWED_IPS = [
 ]
 
 def is_ip_allowed(ip: str) -> bool:
-    """Check if IP is in allowed ranges"""
-    from ipaddress import ip_address, ip_network
-    if not ip:
-        return False
-    try:
-        client_ip = ip_address(ip)
-        return any(client_ip in ip_network(allowed) for allowed in ALLOWED_IPS)
-    except ValueError:
-        return False
+    """Check if IP is in allowed ranges - DISABLED cho public access"""
+    # Cho phép tất cả IP truy cập (vì đã có router firewall bảo vệ)
+    return True
 
 def validate_request(f):
-    """Decorator to validate requests"""
+    """Decorator to validate requests - SIMPLIFIED cho public access"""
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Get real IP even behind proxy
-        client_ip = request.remote_addr
-        
-        # Basic request validation
-        if not is_ip_allowed(client_ip):
-            abort(403, "IP not allowed")
-            
-        # Validate User-Agent
-        user_agent = request.headers.get('User-Agent', '')
-        if not user_agent or len(user_agent) < 5:
-            abort(400, "Invalid User-Agent")
-            
-        # Block suspicious patterns
+        # Bỏ qua IP check và User-Agent check
+        # Chỉ giữ lại basic path validation
         path = request.path
-        if re.search(r'[;\'"]|\\x[0-9a-f]{2}|%[0-9a-f]{2}', path, re.I):
+        if re.search(r'[;\'"]|\\x[0-9a-f]{2}', path, re.I):
             abort(400, "Invalid characters in request")
             
         return f(*args, **kwargs)
