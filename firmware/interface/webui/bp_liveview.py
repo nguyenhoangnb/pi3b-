@@ -2,6 +2,8 @@ from __future__ import annotations
 from flask import Blueprint, Response, request, abort, render_template_string
 from functools import wraps
 import re
+import requests
+import json
 
 # ============================================================
 # CONFIG & SECURITY
@@ -11,9 +13,9 @@ def validate_request(f):
     """Decorator to validate requests"""
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Basic path validation
+        # Basic path validation - improved regex for common attacks
         path = request.path
-        if re.search(r'[;\'"]|\\x[0-9a-f]{2}', path, re.I):
+        if re.search(r'(\.\.|%2e%2e|%252e%252e|[\x00-\x1f\x7f]|[\'";]|\\x[0-9a-f]{2})', path, re.I):
             abort(400, "Invalid characters in request")
             
         return f(*args, **kwargs)
@@ -44,7 +46,7 @@ def live_video():
     <head>
         <title>Live Camera Stream</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <script src="/static/hls.min.js"></script>
+        <script src="/static/hls.min.js"></script>  <!-- Reverted to static as per user -->
         <style>
             body {{ 
                 margin: 0; 
@@ -89,7 +91,7 @@ def live_video():
         <h2>📷 Live Camera Stream (HLS)</h2>
         <p class="status" id="status">● Connecting...</p>
         <video id="videoStream" controls autoplay muted></video>
-        <p class="info">HLS stream from recorder service (port 5000)</p>
+        <p class="info">HLS stream from recorder service (proxied via port 8080)</p>
         
         <script>
             const statusEl = document.getElementById('status');
@@ -166,27 +168,29 @@ def live_video():
 @validate_request
 def live_stream_embed():
     """Return embeddable HLS stream page for iframe"""
-    html = """
+    hls_url = get_hls_url()  # FIXED: Use dynamic proxy URL instead of hardcoded localhost:5000
+    
+    html = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <script src="/static/hls.min.js"></script>
+        <script src="/static/hls.min.js"></script>  <!-- Reverted to static as per user -->
         <style>
-            * { margin: 0; padding: 0; }
-            body { 
+            * {{ margin: 0; padding: 0; }}
+            body {{ 
                 background: #000; 
                 overflow: hidden;
                 width: 100vw;
                 height: 100vh;
-            }
-            #videoStream { 
+            }}
+            #videoStream {{ 
                 width: 100%;
                 height: 100%;
                 object-fit: contain;
                 display: block;
                 background: #000;
-            }
+            }}
         </style>
     </head>
     <body>
@@ -194,25 +198,25 @@ def live_stream_embed():
         
         <script>
             const video = document.getElementById('videoStream');
-            const hlsUrl = 'http://localhost:5000/hls/stream.m3u8';
+            const hlsUrl = '{hls_url}';  <!-- FIXED: Dynamic proxy -->
             
-            if (Hls.isSupported()) {
-                const hls = new Hls({
+            if (Hls.isSupported()) {{
+                const hls = new Hls({{
                     maxBufferLength: 4,
                     maxMaxBufferLength: 10,
                     lowLatencyMode: true
-                });
+                }});
                 
                 hls.loadSource(hlsUrl);
                 hls.attachMedia(video);
                 
-                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {{
                     video.play().catch(e => console.log('Autoplay prevented:', e));
-                });
+                }});
                 
-                hls.on(Hls.Events.ERROR, function(event, data) {
-                    if (data.fatal) {
-                        switch(data.type) {
+                hls.on(Hls.Events.ERROR, function(event, data) {{
+                    if (data.fatal) {{
+                        switch(data.type) {{
                             case Hls.ErrorTypes.NETWORK_ERROR:
                                 setTimeout(() => hls.startLoad(), 1000);
                                 break;
@@ -222,15 +226,15 @@ def live_stream_embed():
                             default:
                                 hls.destroy();
                                 break;
-                        }
-                    }
-                });
-            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                        }}
+                    }}
+                }});
+            }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
                 video.src = hlsUrl;
-                video.addEventListener('loadedmetadata', function() {
+                video.addEventListener('loadedmetadata', function() {{
                     video.play().catch(e => console.log('Autoplay prevented:', e));
-                });
-            }
+                }});
+            }}
         </script>
     </body>
     </html>
@@ -242,7 +246,6 @@ def live_stream_embed():
 def stream_health():
     """Endpoint to check stream health"""
     try:
-        import requests
         response = requests.head("http://localhost:5000/health", timeout=2)
         is_healthy = response.status_code == 200
     except:
@@ -250,12 +253,11 @@ def stream_health():
     
     health = {
         "status": "healthy" if is_healthy else "degraded",
-        "recorder_url": f"http://{request.host.split(':')[0]}:5000",
+        "recorder_url": f"http://localhost:5000",  # FIXED: Use localhost for internal check
         "stream_type": "hls",
         "stream_url": get_hls_url()
     }
     
-    import json
     response = Response(
         response=json.dumps(health),
         status=200 if is_healthy else 503,
@@ -276,16 +278,14 @@ def stream_health():
 @validate_request
 def hls_proxy(filename):
     """Proxy HLS files from recorder service to avoid opening port 5000"""
-    import requests
-    
-    # Validate filename to prevent path traversal
-    if not re.match(r'^[a-zA-Z0-9_\-\.]+$', filename):
+    # Validate filename to prevent path traversal - improved
+    if not re.match(r'^[a-zA-Z0-9_\-\.\/]+$', filename) or '..' in filename:
         abort(400, "Invalid filename")
     
     try:
         # Forward request to recorder service on localhost:5000
         recorder_url = f"http://localhost:5000/hls/{filename}"
-        resp = requests.get(recorder_url, timeout=5, stream=True)
+        resp = requests.get(recorder_url, timeout=5, stream=True)  # Already stream=True
         
         # Determine content type
         if filename.endswith('.m3u8'):
@@ -295,9 +295,14 @@ def hls_proxy(filename):
         else:
             content_type = resp.headers.get('Content-Type', 'application/octet-stream')
         
-        # Create response with appropriate headers
+        # FIXED: Stream response to avoid loading full content into memory
+        def generate():
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        
         response = Response(
-            resp.content,
+            generate(),
             status=resp.status_code,
             mimetype=content_type
         )
@@ -312,6 +317,11 @@ def hls_proxy(filename):
             response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
         else:
             response.headers['Cache-Control'] = 'public, max-age=3600'
+        
+        # Forward other relevant headers
+        for header in ['Content-Length', 'Content-Range']:
+            if header in resp.headers:
+                response.headers[header] = resp.headers[header]
         
         return response
         
