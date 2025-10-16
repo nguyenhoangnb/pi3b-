@@ -21,8 +21,11 @@ def validate_request(f):
 
 bp = Blueprint("liveview", __name__)
 
-# HLS stream URL (served by recorder on port 5000)
-HLS_STREAM_URL = "http://localhost:5000/hls/stream.m3u8"
+# HLS stream URL - use request host to support both localhost and remote access
+def get_hls_url():
+    """Get HLS URL based on request host"""
+    host = request.host.split(':')[0]  # Get host without port
+    return f"http://{host}:5000/hls/stream.m3u8"
 
 # ============================================================
 # ROUTES
@@ -32,7 +35,10 @@ HLS_STREAM_URL = "http://localhost:5000/hls/stream.m3u8"
 @validate_request
 def live_video():
     """Return HTML page with HLS video player"""
-    html = """
+    # Get dynamic HLS URL based on request host
+    hls_url = get_hls_url()
+    
+    html = f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -40,28 +46,28 @@ def live_video():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <script src="/static/hls.min.js"></script>
         <style>
-            body { 
+            body {{ 
                 margin: 0; 
                 background: #000; 
                 text-align: center;
                 font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                 color: #eee;
-            }
-            h2 {
+            }}
+            h2 {{
                 margin: 20px 0 10px 0;
                 font-size: 24px;
-            }
-            .status {
+            }}
+            .status {{
                 color: #0f0;
                 font-size: 14px;
                 margin: 10px 0;
-            }
-            .error {
+            }}
+            .error {{
                 color: #f00;
                 font-size: 14px;
                 margin: 10px 0;
-            }
-            #videoStream { 
+            }}
+            #videoStream {{ 
                 width: 90%; 
                 max-width: 1280px;
                 max-height: 80vh; 
@@ -71,12 +77,12 @@ def live_video():
                 display: block;
                 box-shadow: 0 4px 20px rgba(0,0,0,0.5);
                 background: #000;
-            }
-            .info {
+            }}
+            .info {{
                 font-size: 12px;
                 color: #999;
                 margin-top: 10px;
-            }
+            }}
         </style>
     </head>
     <body>
@@ -88,34 +94,34 @@ def live_video():
         <script>
             const statusEl = document.getElementById('status');
             const video = document.getElementById('videoStream');
-            const hlsUrl = 'http://localhost:5000/hls/stream.m3u8';
+            const hlsUrl = '{hls_url}';
             
-            if (Hls.isSupported()) {
-                const hls = new Hls({
+            if (Hls.isSupported()) {{
+                const hls = new Hls({{
                     maxBufferLength: 4,
                     maxMaxBufferLength: 10,
                     lowLatencyMode: true,
                     enableWorker: true
-                });
+                }});
                 
                 hls.loadSource(hlsUrl);
                 hls.attachMedia(video);
                 
-                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {{
                     console.log('✅ HLS manifest loaded');
                     statusEl.className = 'status';
                     statusEl.textContent = '● Streaming (HLS)';
-                    video.play().catch(e => {
+                    video.play().catch(e => {{
                         console.log('Autoplay prevented:', e);
                         statusEl.textContent = '● Ready (click play)';
-                    });
-                });
+                    }});
+                }});
                 
-                hls.on(Hls.Events.ERROR, function(event, data) {
+                hls.on(Hls.Events.ERROR, function(event, data) {{
                     console.error('HLS Error:', data);
-                    if (data.fatal) {
+                    if (data.fatal) {{
                         statusEl.className = 'error';
-                        switch(data.type) {
+                        switch(data.type) {{
                             case Hls.ErrorTypes.NETWORK_ERROR:
                                 statusEl.textContent = '✖ Network error, retrying...';
                                 console.log('Network error, trying to recover...');
@@ -131,36 +137,30 @@ def live_video():
                                 console.log('Fatal error, destroying HLS...');
                                 hls.destroy();
                                 break;
-                        }
-                    }
-                });
-            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                        }}
+                    }}
+                }});
+            }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
                 // Native HLS support (Safari, iOS)
                 video.src = hlsUrl;
-                video.addEventListener('loadedmetadata', function() {
+                video.addEventListener('loadedmetadata', function() {{
                     console.log('✅ Native HLS loaded');
                     statusEl.className = 'status';
                     statusEl.textContent = '● Streaming (Native HLS)';
-                    video.play().catch(e => {
+                    video.play().catch(e => {{
                         console.log('Autoplay prevented:', e);
                         statusEl.textContent = '● Ready (click play)';
-                    });
-                });
-                
-                video.addEventListener('error', function(e) {
-                    console.error('Video error:', e);
-                    statusEl.className = 'error';
-                    statusEl.textContent = '✖ Stream error';
-                });
-            } else {
+                    }});
+                }});
+            }} else {{
                 statusEl.className = 'error';
                 statusEl.textContent = '✖ HLS not supported in this browser';
-            }
+            }}
         </script>
     </body>
     </html>
     """
-    return Response(html, mimetype='text/html')
+    return render_template_string(html)
 
 @bp.get("/live/stream")
 @validate_request
@@ -250,9 +250,9 @@ def stream_health():
     
     health = {
         "status": "healthy" if is_healthy else "degraded",
-        "recorder_url": "http://localhost:5000",
+        "recorder_url": f"http://{request.host.split(':')[0]}:5000",
         "stream_type": "hls",
-        "stream_url": HLS_STREAM_URL
+        "stream_url": get_hls_url()
     }
     
     import json
