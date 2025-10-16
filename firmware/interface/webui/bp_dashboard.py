@@ -54,8 +54,8 @@ _HTML = r"""
       <button onclick="switchTab('recorded')" class="tab-btn" id="recordedBtn">Recorded Videos</button>
     </div>
     <div id="liveView" class="tab-content active">
-      <iframe id="videoStream" src="/live/stream" style="width:100%; height:480px; border:none; border-radius:8px; background:#000;" allowfullscreen></iframe>
-      <small>WebSocket stream (~{{video_fps}}fps) qua port 5000. Real-time từ recorder service.</small>
+      <iframe id="videoStream" src="/live/stream" style="width:100%; aspect-ratio: 4/3; max-height:70vh; border:none; border-radius:8px; background:#000;" allowfullscreen></iframe>
+      <small>WebSocket stream (~{{video_fps}}fps) qua port 8080 proxy. Real-time từ recorder service.</small>
     </div>
     <div id="recordedView" class="tab-content">
       <div id="playerContainer">

@@ -593,21 +593,46 @@ class PiStreamer:
         p = None
         
         def init_audio():
-            """Khởi tạo hoặc khởi tạo lại audio stream"""
+            """Khởi tạo hoặc khởi tạo lại audio stream - tối ưu cho Pi5"""
             try:
                 new_p = pyaudio.PyAudio()
+                
+                # Thêm delay nhỏ để tránh audio device lock trên Pi5
+                time.sleep(0.2)
+                
                 new_stream = new_p.open(
                     format=FORMAT,
                     channels=CHANNELS,
                     rate=RATE,
                     frames_per_buffer=CHUNK,
                     input=True,
-                    input_device_index=self.audio_device_index
+                    input_device_index=self.audio_device_index,
+                    start=False  # Không start ngay, start sau
                 )
+                
+                # Start stream sau khi khởi tạo
+                new_stream.start_stream()
+                
+                # Test đọc một chunk để chắc chắn hoạt động
+                try:
+                    test_data = new_stream.read(CHUNK, exception_on_overflow=False)
+                    if test_data:
+                        print(f"   ✅ Audio test OK: {len(test_data)} bytes")
+                        return new_p, new_stream
+                except Exception as e:
+                    print(f"   ⚠️ Audio test failed: {e}")
+                    new_stream.close()
+                    new_p.terminate()
+                    return None, None
+                    
                 return new_p, new_stream
             except Exception as e:
-                if new_p:
-                    new_p.terminate()
+                print(f"   ❌ Lỗi init audio: {e}")
+                if 'new_p' in locals():
+                    try:
+                        new_p.terminate()
+                    except:
+                        pass
                 return None, None
         
         # Khởi tạo audio stream lần đầu
@@ -740,14 +765,42 @@ class PiStreamer:
         max_reconnect = 5
         
         def init_camera():
-            """Khởi tạo hoặc khởi tạo lại camera - đơn giản như Flask example"""
-            new_cap = cv2.VideoCapture(self.video_index)
-            if new_cap.isOpened():
-                # Chỉ set resolution, không set buffer hay FPS phức tạp
-                new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.video_width)
-                new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.video_height)
-                return new_cap
-            return None
+            """Khởi tạo hoặc khởi tạo lại camera - tối ưu cho Pi5"""
+            try:
+                # Thử release camera cũ trước (Pi5 cần cleanup kỹ)
+                if hasattr(self, 'cap') and self.cap is not None:
+                    try:
+                        self.cap.release()
+                    except:
+                        pass
+                
+                # Đợi driver reset
+                time.sleep(0.5)
+                
+                # Khởi tạo camera với MMAL backend (tốt hơn cho Pi5)
+                new_cap = cv2.VideoCapture(self.video_index, cv2.CAP_V4L2)
+                
+                if new_cap.isOpened():
+                    # Set resolution
+                    new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.video_width)
+                    new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.video_height)
+                    
+                    # Giảm buffer để tránh memory issues trên Pi5
+                    new_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    
+                    # Test read một frame để chắc chắn hoạt động
+                    ret, test_frame = new_cap.read()
+                    if ret:
+                        print(f"   ✅ Camera test OK: {test_frame.shape}")
+                        return new_cap
+                    else:
+                        print("   ⚠️ Camera không đọc được frame test")
+                        new_cap.release()
+                        return None
+                return None
+            except Exception as e:
+                print(f"   ❌ Lỗi init camera: {e}")
+                return None
         
         # Khởi tạo camera lần đầu
         cap = init_camera()
@@ -802,10 +855,21 @@ class PiStreamer:
                     reconnect_attempts = 0  # Reset counter khi thành công
                     continue
             
-            # Đọc frame
-            ret, frame = cap.read()
-            if not ret:
-                print(f"⚠️ Không đọc được frame (cap.isOpened={cap.isOpened() if cap else 'None'})")
+            # Đọc frame với timeout protection (Pi5 có thể hang ở đây)
+            try:
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    print(f"⚠️ Không đọc được frame (cap.isOpened={cap.isOpened() if cap else 'None'})")
+                    # Không ngay lập tức reconnect, có thể chỉ là frame skip
+                    reconnect_attempts += 1
+                    if reconnect_attempts > 3:
+                        print("   ↳ Quá nhiều frame lỗi, sẽ reconnect...")
+                        cap = None  # Force reconnect
+                    time.sleep(0.1)
+                    continue
+            except Exception as e:
+                print(f"⚠️ Exception khi đọc frame: {e}")
+                cap = None  # Force reconnect
                 time.sleep(0.5)
                 continue
 
@@ -998,33 +1062,48 @@ class PiStreamer:
     def cleanup(self):
         """
         Dừng an toàn threads, FFmpeg, các module phần cứng (LED, GNSS, RTC),
-        tránh crash camera trên Raspberry Pi.
+        tránh crash camera trên Raspberry Pi (đặc biệt Pi5).
         """
         print("🧹 Bắt đầu cleanup...")
 
         # 1️⃣ Set stop flag để threads tự dừng
         self._stop_flag = True
-
-        # 2️⃣ Dừng video/audio/mux threads
-        self.stop()
         
-        # 2.5️⃣ Force release camera nếu còn tồn đọng
+        # Đợi một chút để threads nhận flag
+        time.sleep(0.5)
+
+        # 2️⃣ Dừng video/audio threads với timeout ngắn hơn
+        if hasattr(self, '_video_thread_obj') and self._video_thread_obj:
+            print("⏱ Dừng video thread...")
+            self._video_thread_obj.join(timeout=3)
+            if self._video_thread_obj.is_alive():
+                print("⚠️ Video thread vẫn chạy, force cleanup...")
+                
+        if hasattr(self, '_audio_thread_obj') and self._audio_thread_obj:
+            print("⏱ Dừng audio thread...")
+            self._audio_thread_obj.join(timeout=3)
+            if self._audio_thread_obj.is_alive():
+                print("⚠️ Audio thread vẫn chạy, force cleanup...")
+        
+        # 3️⃣ Force release camera (QUAN TRỌNG cho Pi5)
         if hasattr(self, 'cap') and self.cap is not None:
             try:
+                print("📹 Đang release camera...")
                 if self.cap.isOpened():
                     self.cap.release()
-                    print("📹 Camera đã được release")
-                    time.sleep(0.5)  # Đợi driver reset
+                self.cap = None
+                print("   ✅ Camera đã được release")
+                time.sleep(1.0)  # Đợi driver reset (Pi5 cần nhiều thời gian hơn)
             except Exception as e:
-                print(f"⚠️ Lỗi release camera: {e}")
+                print(f"   ⚠️ Lỗi release camera: {e}")
         
-        # Force giải phóng tài nguyên OpenCV
+        # 4️⃣ Force giải phóng tài nguyên OpenCV
         try:
             cv2.destroyAllWindows()
         except:
             pass
 
-        # 3️⃣ Tắt LED (nếu có)
+        # 5️⃣ Tắt LED (nếu có)
         if hasattr(self, 'led_control'):
             try:
                 self.led_control.off()
