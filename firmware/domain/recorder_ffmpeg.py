@@ -179,7 +179,7 @@ class FFmpegRecorder:
                     '-f', 'S16_LE',
                     '-r', '48000',
                     '-c', '1',
-                    '-d', '0.5',  # 0.5 seconds
+                    '-d', '1',  # 1 second
                     '/tmp/audio_test.wav'
                 ]
                 
