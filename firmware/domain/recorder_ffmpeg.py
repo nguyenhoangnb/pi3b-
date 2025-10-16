@@ -170,26 +170,22 @@ class FFmpegRecorder:
             ]
             
             print("🔍 Testing audio devices...")
-            
             for alsa_device in test_devices:
-                # Quick test with arecord (more reliable than FFmpeg test)
                 test_cmd = [
                     'arecord',
                     '-D', alsa_device,
                     '-f', 'S16_LE',
                     '-r', '48000',
                     '-c', '1',
-                    '-d', '1',  # 1 second
+                    '-d', '1',  # 1 second (arecord only accepts integer seconds)
                     '/tmp/audio_test.wav'
                 ]
-                
                 try:
                     result = subprocess.run(
                         test_cmd,
                         capture_output=True,
                         timeout=2
                     )
-                    
                     if result.returncode == 0:
                         print(f"✅ Audio device verified: {alsa_device}")
                         # Clean up test file
@@ -202,18 +198,14 @@ class FFmpegRecorder:
                         stderr = result.stderr.decode('utf-8', errors='ignore')
                         if 'No such device' not in stderr and 'cannot find card' not in stderr:
                             print(f"⚠️ {alsa_device}: {stderr.split(chr(10))[0][:60]}")
-                            
                 except subprocess.TimeoutExpired:
                     print(f"⏱️ {alsa_device}: Timeout")
                 except Exception:
                     pass
-            
             print("⚠️ No working audio device found")
             return None
-            
         except Exception as e:
             print(f"⚠️ Audio device error: {e}")
-        
         return None
     
     def start_recording(self):
