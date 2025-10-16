@@ -8,11 +8,10 @@ import re
 # ============================================================
 
 def validate_request(f):
-    """Decorator to validate requests - SIMPLIFIED cho public access"""
+    """Decorator to validate requests"""
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Bỏ qua IP check và User-Agent check
-        # Chỉ giữ lại basic path validation
+        # Basic path validation
         path = request.path
         if re.search(r'[;\'"]|\\x[0-9a-f]{2}', path, re.I):
             abort(400, "Invalid characters in request")
@@ -22,8 +21,8 @@ def validate_request(f):
 
 bp = Blueprint("liveview", __name__)
 
-# URL của recorder service HLS stream
-RECORDER_HLS_URL = "http://localhost:5000/hls/stream.m3u8"
+# HLS stream URL (served by recorder on port 5000)
+HLS_STREAM_URL = "http://localhost:5000/hls/stream.m3u8"
 
 # ============================================================
 # ROUTES
@@ -71,6 +70,7 @@ def live_video():
                 margin: 20px auto;
                 display: block;
                 box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+                background: #000;
             }
             .info {
                 font-size: 12px;
@@ -80,8 +80,8 @@ def live_video():
         </style>
     </head>
     <body>
-        <h2>📷 Live Camera Stream</h2>
-        <p class="status" id="status">● Connecting to HLS stream...</p>
+        <h2>📷 Live Camera Stream (HLS)</h2>
+        <p class="status" id="status">● Connecting...</p>
         <video id="videoStream" controls autoplay muted></video>
         <p class="info">HLS stream from recorder service (port 5000)</p>
         
@@ -94,7 +94,8 @@ def live_video():
                 const hls = new Hls({
                     maxBufferLength: 4,
                     maxMaxBufferLength: 10,
-                    lowLatencyMode: true
+                    lowLatencyMode: true,
+                    enableWorker: true
                 });
                 
                 hls.loadSource(hlsUrl);
@@ -103,10 +104,10 @@ def live_video():
                 hls.on(Hls.Events.MANIFEST_PARSED, function() {
                     console.log('✅ HLS manifest loaded');
                     statusEl.className = 'status';
-                    statusEl.textContent = '● Streaming via HLS';
+                    statusEl.textContent = '● Streaming (HLS)';
                     video.play().catch(e => {
                         console.log('Autoplay prevented:', e);
-                        statusEl.textContent = '● Click to play';
+                        statusEl.textContent = '● Ready (click play)';
                     });
                 });
                 
@@ -114,18 +115,19 @@ def live_video():
                     console.error('HLS Error:', data);
                     if (data.fatal) {
                         statusEl.className = 'error';
-                        statusEl.textContent = '✖ Stream error: ' + data.type;
-                        
                         switch(data.type) {
                             case Hls.ErrorTypes.NETWORK_ERROR:
+                                statusEl.textContent = '✖ Network error, retrying...';
                                 console.log('Network error, trying to recover...');
-                                hls.startLoad();
+                                setTimeout(() => hls.startLoad(), 1000);
                                 break;
                             case Hls.ErrorTypes.MEDIA_ERROR:
+                                statusEl.textContent = '✖ Media error, recovering...';
                                 console.log('Media error, trying to recover...');
                                 hls.recoverMediaError();
                                 break;
                             default:
+                                statusEl.textContent = '✖ Fatal error';
                                 console.log('Fatal error, destroying HLS...');
                                 hls.destroy();
                                 break;
@@ -138,8 +140,17 @@ def live_video():
                 video.addEventListener('loadedmetadata', function() {
                     console.log('✅ Native HLS loaded');
                     statusEl.className = 'status';
-                    statusEl.textContent = '● Streaming via HLS (native)';
-                    video.play().catch(e => console.log('Autoplay prevented:', e));
+                    statusEl.textContent = '● Streaming (Native HLS)';
+                    video.play().catch(e => {
+                        console.log('Autoplay prevented:', e);
+                        statusEl.textContent = '● Ready (click play)';
+                    });
+                });
+                
+                video.addEventListener('error', function(e) {
+                    console.error('Video error:', e);
+                    statusEl.className = 'error';
+                    statusEl.textContent = '✖ Stream error';
                 });
             } else {
                 statusEl.className = 'error';
@@ -174,6 +185,7 @@ def live_stream_embed():
                 height: 100%;
                 object-fit: contain;
                 display: block;
+                background: #000;
             }
         </style>
     </head>
@@ -190,18 +202,19 @@ def live_stream_embed():
                     maxMaxBufferLength: 10,
                     lowLatencyMode: true
                 });
+                
                 hls.loadSource(hlsUrl);
                 hls.attachMedia(video);
+                
                 hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                    console.log('✅ HLS manifest loaded');
                     video.play().catch(e => console.log('Autoplay prevented:', e));
                 });
+                
                 hls.on(Hls.Events.ERROR, function(event, data) {
                     if (data.fatal) {
-                        console.error('Fatal HLS error:', data);
                         switch(data.type) {
                             case Hls.ErrorTypes.NETWORK_ERROR:
-                                hls.startLoad();
+                                setTimeout(() => hls.startLoad(), 1000);
                                 break;
                             case Hls.ErrorTypes.MEDIA_ERROR:
                                 hls.recoverMediaError();
@@ -227,7 +240,7 @@ def live_stream_embed():
 @bp.get("/stream/health")
 @validate_request
 def stream_health():
-    """Endpoint kiểm tra trạng thái stream."""
+    """Endpoint to check stream health"""
     try:
         import requests
         response = requests.head("http://localhost:5000/health", timeout=2)
@@ -237,12 +250,14 @@ def stream_health():
     
     health = {
         "status": "healthy" if is_healthy else "degraded",
-        "recorder_url": RECORDER_HLS_URL,
-        "stream_type": "hls"
+        "recorder_url": "http://localhost:5000",
+        "stream_type": "hls",
+        "stream_url": HLS_STREAM_URL
     }
     
+    import json
     response = Response(
-        response=str(health),
+        response=json.dumps(health),
         status=200 if is_healthy else 503,
         mimetype='application/json'
     )
@@ -250,5 +265,5 @@ def stream_health():
     # Add security headers
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['Cache-Control'] = 'no-store, no-cache'
-    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-Frame-Options'] = 'SAMEORIGIN'
     return response

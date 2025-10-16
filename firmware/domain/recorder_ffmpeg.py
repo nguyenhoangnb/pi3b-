@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from flask import Flask, Response, send_from_directory
+from flask_cors import CORS
 from firmware.hal.usb_manager import USBManager
 from firmware.hal.gpio_leds import gpioLed
 from firmware.hal.gnss import GNSSModule
@@ -76,9 +77,29 @@ class FFmpegRecorder:
         self.ffmpeg_process = None
         self._stop_flag = False
         
+        # Storage monitoring thread
+        self._storage_monitor_thread = None
+        
         # Flask app for HLS serving
         self.app = Flask(__name__)
+        
+        # Enable CORS for all routes (allows WebUI to access HLS from different port)
+        CORS(self.app, resources={r"/*": {"origins": "*"}})
+        
         self.setup_flask_routes()
+    
+    def _storage_monitor_loop(self):
+        """Monitor USB storage and update LED accordingly"""
+        import time
+        while not self._stop_flag and self.is_running():
+            if not self.usb_manager.is_available():
+                # USB disconnected - blink LED
+                self.led_control.blink(0.3)
+                print("⚠️ USB storage disconnected!")
+            else:
+                # USB connected and recording - LED should be solid on
+                self.led_control.on()
+            time.sleep(2)  # Check every 2 seconds
     
     def setup_flask_routes(self):
         """Setup Flask routes for HLS streaming"""
@@ -87,12 +108,24 @@ class FFmpegRecorder:
         def index():
             return {
                 "status": "running" if self.is_running() else "stopped",
-                "hls_url": "/hls/stream.m3u8"
+                "hls_url": "/hls/stream.m3u8",
+                "hls_dir": self.hls_dir,
+                "ffmpeg_pid": self.ffmpeg_process.pid if self.ffmpeg_process else None
             }
         
         @self.app.route('/hls/<path:filename>')
         def serve_hls(filename):
             """Serve HLS playlist and segments"""
+            file_path = Path(self.hls_dir) / filename
+            if not file_path.exists():
+                # Debug: list files in HLS directory
+                files = list(Path(self.hls_dir).iterdir()) if Path(self.hls_dir).exists() else []
+                return {
+                    "error": "File not found",
+                    "requested": str(file_path),
+                    "hls_dir": self.hls_dir,
+                    "files_in_dir": [str(f.name) for f in files]
+                }, 404
             return send_from_directory(self.hls_dir, filename)
         
         @self.app.route('/health')
@@ -101,7 +134,8 @@ class FFmpegRecorder:
                 "status": "ok",
                 "recording": self.is_running(),
                 "storage_available": self.usb_manager.is_available(),
-                "storage_space_ok": self.usb_manager.has_enough_space()
+                "storage_space_ok": self.usb_manager.has_enough_space(),
+                "ffmpeg_running": self.ffmpeg_process.poll() is None if self.ffmpeg_process else False
             }
     
     def get_video_device(self):
@@ -122,21 +156,58 @@ class FFmpegRecorder:
     def get_audio_device(self):
         """Get audio device in ALSA format"""
         if not self.config['capabilities'].get('audio', False):
+            print("ℹ️ Audio disabled in config")
             return None
         
         try:
-            micro = Micro()
-            device_str = micro.get_first_available_device()
+            # List of devices to test (plughw is more compatible than hw)
+            test_devices = [
+                "plughw:0,0",  # Usually main audio input
+                "plughw:0,6",  # Digital microphone
+                "plughw:1,0",  # USB audio if available
+                "hw:1,0",      # USB audio direct
+                "hw:0,0",      # Main audio direct
+            ]
             
-            if device_str:
-                # Parse device string to get hw:x,y format
-                if 'hw:' in device_str:
-                    match = re.search(r'hw:(\d+),(\d+)', device_str, re.I)
-                    if match:
-                        return f"hw:{match.group(1)},{match.group(2)}"
+            print("🔍 Testing audio devices...")
+            
+            for alsa_device in test_devices:
+                # Quick test with FFmpeg
+                test_cmd = [
+                    'ffmpeg',
+                    '-f', 'alsa',
+                    '-channels', '1',
+                    '-sample_rate', '48000',
+                    '-i', alsa_device,
+                    '-t', '0.5',
+                    '-f', 'null',
+                    '-'
+                ]
                 
-                # Fallback to default
-                return "hw:1,0"
+                try:
+                    result = subprocess.run(
+                        test_cmd,
+                        capture_output=True,
+                        timeout=3
+                    )
+                    
+                    if result.returncode == 0:
+                        print(f"✅ Audio device verified: {alsa_device}")
+                        return alsa_device
+                    else:
+                        # Check if it's just "no such device" vs I/O error
+                        stderr = result.stderr.decode('utf-8', errors='ignore')
+                        if 'No such device' not in stderr and 'cannot find card' not in stderr:
+                            print(f"⚠️ {alsa_device}: {stderr.split(chr(10))[0][:60]}")
+                            
+                except subprocess.TimeoutExpired:
+                    print(f"⏱️ {alsa_device}: Timeout")
+                except Exception:
+                    pass
+            
+            print("⚠️ No working audio device found")
+            return None
+            
         except Exception as e:
             print(f"⚠️ Audio device error: {e}")
         
@@ -186,7 +257,7 @@ class FFmpegRecorder:
         video_size = self.config['video']['v4l2_format']  # "640x480"
         video_fps = self.config['video']['v4l2_fps']
         
-        # Build FFmpeg command
+        # Build FFmpeg command - use MJPEG input with proper chroma conversion
         cmd = [
             'ffmpeg',
             '-f', 'v4l2',
@@ -208,17 +279,69 @@ class FFmpegRecorder:
                 '-i', audio_dev,
             ])
             print(f"   ↳ Audio: {audio_dev} ({audio_channels}ch @ {audio_rate}Hz)")
+        else:
+            print(f"   ↳ Audio: Disabled (video only)")
         
-        # Video codec settings
+        # Build video filter with timestamp and GPS overlay
+        video_filters = []
+        
+        # 1. Scale and format conversion
+        video_filters.append('scale=640:480:flags=bicubic,format=yuv420p')
+        
+        # 2. Add timestamp overlay
+        timestamp_text = r"%{localtime\:%Y-%m-%d %H\\\:%M\\\:%S}"
+        video_filters.append(
+            f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:"
+            f"text='{timestamp_text}':"
+            f"fontcolor=white:fontsize=20:box=1:boxcolor=black@0.5:"
+            f"boxborderw=5:x=10:y=10"
+        )
+        
+        # 3. Add GPS coordinates overlay (if available)
+        if self.gnss_available and hasattr(self, 'gnss'):
+            gps_data = self.gnss.get_location()
+            if gps_data.get('latitude') and gps_data.get('longitude'):
+                lat = gps_data['latitude']
+                lon = gps_data['longitude']
+                sats = gps_data.get('num_sats', 0)
+                gps_text = f"GPS: {lat:.6f}, {lon:.6f} ({sats} sats)"
+                video_filters.append(
+                    f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:"
+                    f"text='{gps_text}':"
+                    f"fontcolor=yellow:fontsize=16:box=1:boxcolor=black@0.5:"
+                    f"boxborderw=5:x=10:y=h-th-10"
+                )
+                print(f"   ↳ GPS: {lat:.6f}, {lon:.6f}")
+            else:
+                # Show "No GPS Fix" if GPS is enabled but no fix yet
+                video_filters.append(
+                    f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:"
+                    f"text='GPS: No Fix':"
+                    f"fontcolor=red:fontsize=16:box=1:boxcolor=black@0.5:"
+                    f"boxborderw=5:x=10:y=h-th-10"
+                )
+                print(f"   ↳ GPS: Waiting for fix...")
+        
+        # Combine all filters
+        filter_string = ','.join(video_filters)
+        
+        # Video codec settings (force Main profile for browser compatibility)
         cmd.extend([
+            '-vf', filter_string,
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',
+            '-preset', 'veryfast',  # veryfast is better quality than ultrafast
             '-tune', 'zerolatency',
+            '-profile:v', 'main',  # Main profile (compatible with MSE/HLS.js)
+            '-level', '3.1',
+            '-x264-params', 'nal-hrd=cbr',  # Constant bitrate for HLS
             '-g', str(video_fps * 2),  # Keyframe every 2 seconds
+            '-keyint_min', str(video_fps * 2),  # Minimum keyframe interval
             '-sc_threshold', '0',
             '-b:v', '1200k',
             '-maxrate', '1500k',
             '-bufsize', '3000k',
+            '-force_key_frames', f'expr:gte(t,n_forced*{2})',  # Force keyframes every 2s
+            '-pix_fmt', 'yuv420p',  # Explicitly set pixel format for output
         ])
         
         # Audio codec if available
@@ -228,26 +351,29 @@ class FFmpegRecorder:
                 '-b:a', '128k',
             ])
         
-        # Output 1: Segmented MP4 files
+        # Use tee muxer to output to both MP4 segments and HLS with single encode
+        # This ensures both outputs have the same codec profile
         timestamp_pattern = f"{self.output_dir}/%Y%m%d_%H%M%S_cam0.mp4"
+        
         cmd.extend([
-            '-f', 'segment',
-            '-segment_time', str(self.segment_seconds),
-            '-segment_format', 'mp4',
-            '-reset_timestamps', '1',
-            '-strftime', '1',
-            timestamp_pattern,
+            '-f', 'tee',
+            '-map', '0:v',  # Map video stream
         ])
         
-        # Output 2: HLS stream
-        cmd.extend([
-            '-f', 'hls',
-            '-hls_time', '2',
-            '-hls_list_size', '10',
-            '-hls_flags', 'delete_segments',
-            '-hls_segment_filename', f'{self.hls_dir}/segment_%03d.ts',
-            f'{self.hls_dir}/stream.m3u8',
-        ])
+        if audio_dev:
+            cmd.extend(['-map', '1:a'])  # Map audio stream if available
+        
+        # Tee output: MP4 segments | HLS stream
+        tee_output = (
+            f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
+            f"reset_timestamps=1:strftime=1]{timestamp_pattern}|"
+            f"[f=hls:hls_time=2:hls_list_size=10:"
+            f"hls_flags=delete_segments+independent_segments:"
+            f"hls_segment_type=mpegts:start_number=0:"
+            f"hls_segment_filename={self.hls_dir}/segment_%03d.ts]{self.hls_dir}/stream.m3u8"
+        )
+        
+        cmd.append(tee_output)
         
         print(f"🎬 Starting FFmpeg recording...")
         print(f"   ↳ Video: {video_dev} ({video_size} @ {video_fps}fps)")
@@ -256,19 +382,47 @@ class FFmpegRecorder:
         print(f"   ↳ Segment: {self.segment_seconds}s")
         
         try:
+            # Log full command for debugging
+            print(f"   ↳ Command: {' '.join(cmd)}")
+            
             self.ffmpeg_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL
+                stderr=subprocess.STDOUT,  # Combine stderr with stdout
+                stdin=subprocess.DEVNULL,
+                universal_newlines=True,
+                bufsize=1
             )
             
             print(f"✅ FFmpeg started (PID: {self.ffmpeg_process.pid})")
+            
+            # Start a thread to monitor FFmpeg output
+            import threading
+            def monitor_ffmpeg():
+                for line in self.ffmpeg_process.stdout:
+                    if 'error' in line.lower() or 'failed' in line.lower():
+                        print(f"⚠️ FFmpeg: {line.strip()}")
+            
+            monitor_thread = threading.Thread(target=monitor_ffmpeg, daemon=True)
+            monitor_thread.start()
+            
+            # Start storage monitoring thread
+            self._storage_monitor_thread = threading.Thread(target=self._storage_monitor_loop, daemon=True)
+            self._storage_monitor_thread.start()
+            
+            # Wait a bit to see if FFmpeg starts successfully
+            time.sleep(1)
+            if self.ffmpeg_process.poll() is not None:
+                print(f"❌ FFmpeg exited immediately with code {self.ffmpeg_process.returncode}")
+                return False
+            
             self.led_control.on()
             return True
             
         except Exception as e:
             print(f"❌ Failed to start FFmpeg: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def stop_recording(self):
@@ -277,6 +431,9 @@ class FFmpegRecorder:
             return
         
         print("⏱ Stopping FFmpeg...")
+        
+        # Signal storage monitor to stop
+        self._stop_flag = True
         
         try:
             # Send 'q' to FFmpeg stdin for graceful shutdown
@@ -291,7 +448,10 @@ class FFmpegRecorder:
             print(f"   ⚠️ Error stopping FFmpeg: {e}")
         
         self.ffmpeg_process = None
+        
+        # Turn off LED when recording stops
         self.led_control.off()
+        print("   💡 LED off")
     
     def is_running(self):
         """Check if FFmpeg is running"""
