@@ -318,7 +318,7 @@ def hls_proxy(filename):
     except requests.exceptions.RequestException as e:
         abort(502, f"Recorder service unavailable: {str(e)}")
 
-@bp.options("/hls/<path:filename>")
+@bp.route("/hls/<path:filename>", methods=['OPTIONS'])
 def hls_proxy_options(filename):
     """Handle CORS preflight for HLS"""
     response = Response()
