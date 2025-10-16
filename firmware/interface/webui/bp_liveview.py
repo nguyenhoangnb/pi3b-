@@ -1,35 +1,17 @@
 from __future__ import annotations
 from flask import Blueprint, Response, request, abort, render_template_string
-from flask_socketio import emit
-from werkzeug.middleware.proxy_fix import ProxyFix
-import time
 from functools import wraps
 import re
-import socketio as sio_client  # Socket.IO client để kết nối đến recorder
 
 # ============================================================
 # CONFIG & SECURITY
 # ============================================================
-RECORDER_TIMEOUT=100
-# Allowed IP ranges (adjust these to match your legitimate client IPs)
-ALLOWED_IPS = [
-    '127.0.0.1',      # localhost
-    '192.168.0.0/16', # typical LAN
-    '10.0.0.0/8',     # private network
-    '172.16.0.0/12'   # private network
-]
-
-def is_ip_allowed(ip: str) -> bool:
-    """Check if IP is in allowed ranges - DISABLED cho public access"""
-    # Cho phép tất cả IP truy cập (vì đã có router firewall bảo vệ)
-    return True
 
 def validate_request(f):
-    """Decorator to validate requests - SIMPLIFIED cho public access"""
+    """Decorator to validate requests"""
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Bỏ qua IP check và User-Agent check
-        # Chỉ giữ lại basic path validation
+        # Basic path validation
         path = request.path
         if re.search(r'[;\'"]|\\x[0-9a-f]{2}', path, re.I):
             abort(400, "Invalid characters in request")
@@ -39,49 +21,8 @@ def validate_request(f):
 
 bp = Blueprint("liveview", __name__)
 
-# URL của recorder service WebSocket (local only - không public)
-RECORDER_WS_URL = "http://localhost:5000"  # WebSocket endpoint
-
-# SocketIO client để kết nối đến recorder
-recorder_client = None
-
-def setup_socketio_proxy(socketio_server):
-    """Setup WebSocket proxy: WebUI (port 8080) <-> Recorder (port 5000)"""
-    global recorder_client
-    
-    print("🔧 Setting up WebSocket proxy...")
-    
-    # Tạo Socket.IO client kết nối đến recorder
-    recorder_client = sio_client.Client(reconnection=True, reconnection_attempts=0)
-    
-    @recorder_client.on('connect')
-    def on_recorder_connect():
-        print("✅ Proxy connected to recorder (port 5000)")
-    
-    @recorder_client.on('disconnect')
-    def on_recorder_disconnect():
-        print("❌ Proxy disconnected from recorder")
-    
-    @recorder_client.on('video_frame')
-    def on_recorder_video_frame(data):
-        """Forward video frames từ recorder đến tất cả WebUI clients"""
-        socketio_server.emit('video_frame', data, namespace='/')
-    
-    # Kết nối đến recorder
-    try:
-        recorder_client.connect(RECORDER_WS_URL, transports=['websocket'])
-        print(f"📡 WebSocket proxy started: WebUI (8080) -> Recorder (5000)")
-    except Exception as e:
-        print(f"⚠️ Could not connect to recorder: {e}")
-    
-    # Handlers cho WebUI clients
-    @socketio_server.on('connect')
-    def handle_client_connect():
-        print(f"👥 Client connected to WebUI proxy")
-    
-    @socketio_server.on('disconnect')
-    def handle_client_disconnect():
-        print(f"👋 Client disconnected from WebUI proxy")
+# URL của recorder service HLS stream
+RECORDER_HLS_URL = "http://localhost:5000/hls/stream.m3u8"
 
 # ============================================================
 # ROUTES
