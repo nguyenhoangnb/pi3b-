@@ -422,7 +422,30 @@ class PiStreamer:
         if '/' not in [rule.rule for rule in self.app.url_map.iter_rules()]:
             @self.app.route('/')
             def index():
-                return "Recorder service running (WebSocket enabled)"
+                return "Recorder service running (WebSocket + MJPEG enabled)"
+            
+            @self.app.route('/stream')
+            def mjpeg_stream():
+                """MJPEG stream endpoint (không cần WebSocket)"""
+                def gen_frames():
+                    """Generator để stream MJPEG frames"""
+                    while not self._stop_flag:
+                        with self.frame_lock:
+                            if not self.frame_queue:
+                                time.sleep(0.05)
+                                continue
+                            frame = self.frame_queue[-1]
+                        
+                        # Encode frame as JPEG
+                        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                        if ret:
+                            frame_bytes = buffer.tobytes()
+                            yield (b'--frame\r\n'
+                                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                        
+                        time.sleep(1 / self.video_fps)  # Control FPS
+                
+                return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
         
         @socketio.on('connect')
         def handle_connect():

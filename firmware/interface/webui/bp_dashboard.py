@@ -54,8 +54,8 @@ _HTML = r"""
       <button onclick="switchTab('recorded')" class="tab-btn" id="recordedBtn">Recorded Videos</button>
     </div>
     <div id="liveView" class="tab-content active">
-      <canvas id="videoCanvas" style="width:100%; height:480px; background:#000;"></canvas>
-      <small>WebSocket stream (~{{video_fps}}fps). Ultra-low latency, real-time từ recorder.</small>
+      <img id="videoStream" src="/live/stream" style="width:100%; height:480px; background:#000; border-radius:8px;" alt="Live Stream">
+      <small>MJPEG stream (~{{video_fps}}fps) qua port 8080. Proxy từ recorder service.</small>
     </div>
     <div id="recordedView" class="tab-content">
       <div id="playerContainer">
@@ -143,7 +143,6 @@ _FRAME = r"""
 <!doctype html><html><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PiCam WebUI</title>
-<script src="/static/socket.io.js"></script>
 <style>
 :root{--bg:#fff;--fg:#111;--muted:#666;--card:#fafafa;--bd:#e5e7eb;--ok:#16a34a;--warn:#f59e0b;--err:#dc2626;--off:#9ca3af}
 *{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:20px;color:var(--fg);background:var(--bg)}
@@ -252,42 +251,6 @@ function playVideo(url) {
     video.src = url;
     video.play();
 }
-
-// WebSocket video stream
-function initLiveStream() {
-    const canvas = document.getElementById('videoCanvas');
-    const ctx = canvas.getContext('2d');
-    // Kết nối đến recorder service (cùng domain với webui)
-    const socket = io(window.location.protocol + '//' + window.location.hostname + ':5000');
-    
-    socket.on('connect', () => {
-        console.log('Connected to recorder');
-    });
-    
-    socket.on('video_frame', (data) => {
-        if (!document.getElementById('liveView').classList.contains('active')) {
-            return; // Skip if not on live view tab
-        }
-        const img = new Image();
-        img.onload = () => {
-            canvas.width = img.width;
-            canvas.height = img.height;
-            ctx.drawImage(img, 0, 0);
-        };
-        img.src = 'data:image/jpeg;base64,' + data.frame;
-    });
-    
-    socket.on('disconnect', () => {
-        console.log('Disconnected from recorder');
-    });
-    
-    socket.on('connect_error', (error) => {
-        console.error('Connection error:', error);
-    });
-}
-
-// Initialize live stream when document is loaded
-document.addEventListener('DOMContentLoaded', initLiveStream);
 </script>
 </head><body><div class="wrap">{{body|safe}}</div></body></html>
 """
