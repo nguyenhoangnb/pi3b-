@@ -172,9 +172,9 @@ class PiStreamer:
         self.ws_clients = set()  # Track connected WebSocket clients
 
     def check_liscam(self):
-        """Tìm index camera hoạt động bằng cách thử các index từ 0 đến 9"""
+        """Tìm index camera hoạt động - đơn giản như Flask example"""
         for cam in range(10):  # Thử lên đến /dev/video9
-            cap = cv2.VideoCapture(cam, cv2.CAP_V4L2)
+            cap = cv2.VideoCapture(cam)
             if cap.isOpened():
                 cap.release()
                 print(f"✅ Tìm thấy camera tại index {cam}")
@@ -637,18 +637,26 @@ class PiStreamer:
         print("✅ Audio thread stopped.")
 
     def _video_thread(self):
-        """Thread đọc và ghi video độc lập"""
-        cap = cv2.VideoCapture(self.video_index, cv2.CAP_V4L2)
+        """Thread đọc và ghi video độc lập với auto-reconnect"""
+        cap = None
+        reconnect_attempts = 0
+        max_reconnect = 5
+        
+        def init_camera():
+            """Khởi tạo hoặc khởi tạo lại camera - đơn giản như Flask example"""
+            new_cap = cv2.VideoCapture(self.video_index)
+            if new_cap.isOpened():
+                # Chỉ set resolution, không set buffer hay FPS phức tạp
+                new_cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.video_width)
+                new_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.video_height)
+                return new_cap
+            return None
+        
+        # Khởi tạo camera lần đầu
+        cap = init_camera()
         self.cap = cap  # Lưu reference để cleanup sau
         
-        # Set buffer size nhỏ để tránh lag
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.video_width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.video_height)
-        cap.set(cv2.CAP_PROP_FPS, self.video_fps)
-
-        if not cap.isOpened():
+        if cap is None:
             print("❌ Không mở được camera!")
             return
         
@@ -668,9 +676,36 @@ class PiStreamer:
         while not self._stop_flag:
             ret, frame = cap.read()
             if not ret:
-                print("⚠️ Không đọc được frame.")
-                time.sleep(0.1)
-                continue
+                print("⚠️ Không đọc được frame, thử reconnect...")
+                
+                # Đóng camera hiện tại
+                try:
+                    cap.release()
+                    time.sleep(1)  # Đợi driver reset
+                except:
+                    pass
+                
+                # Thử reconnect
+                reconnect_attempts += 1
+                if reconnect_attempts > max_reconnect:
+                    print(f"❌ Đã thử reconnect {max_reconnect} lần thất bại, dừng video thread")
+                    break
+                
+                print(f"🔄 Đang reconnect camera... (lần {reconnect_attempts}/{max_reconnect})")
+                cap = init_camera()
+                self.cap = cap
+                
+                if cap is None:
+                    print("❌ Reconnect thất bại, thử lại sau 2 giây...")
+                    time.sleep(2)
+                    continue
+                else:
+                    print("✅ Reconnect camera thành công!")
+                    reconnect_attempts = 0  # Reset counter khi thành công
+                    continue
+
+            # Reset reconnect counter khi đọc frame thành công
+            reconnect_attempts = 0
 
             # Add overlay text direct (chỉ mỗi 2 giây thay vì mỗi frame)
             current_time = time.time()
