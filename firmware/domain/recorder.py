@@ -436,8 +436,8 @@ class PiStreamer:
                                 continue
                             frame = self.frame_queue[-1]
                         
-                        # Encode frame as JPEG
-                        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                        # Encode frame as JPEG (lower quality = faster)
+                        ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
                         if ret:
                             frame_bytes = buffer.tobytes()
                             yield (b'--frame\r\n'
@@ -470,8 +470,8 @@ class PiStreamer:
                     self.frame_queue = [frame]  # Keep only latest
                 
                 try:
-                    # Encode frame as JPEG then base64
-                    ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    # Encode frame as JPEG then base64 (lower quality = faster)
+                    ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     if ret:
                         b64_frame = base64.b64encode(buffer).decode('utf-8')
                         # Broadcast to all clients
@@ -639,6 +639,11 @@ class PiStreamer:
     def _video_thread(self):
         """Thread đọc và ghi video độc lập"""
         cap = cv2.VideoCapture(self.video_index, cv2.CAP_V4L2)
+        self.cap = cap  # Lưu reference để cleanup sau
+        
+        # Set buffer size nhỏ để tránh lag
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.video_width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.video_height)
         cap.set(cv2.CAP_PROP_FPS, self.video_fps)
@@ -667,20 +672,30 @@ class PiStreamer:
                 time.sleep(0.1)
                 continue
 
-            # Add overlay text direct
-            overlay_text = self._get_overlay_text()
-            lines = overlay_text.split('\n')
-            y_offset = 10
-            for line in lines:
-                cv2.putText(frame, line, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                y_offset += 25
+            # Add overlay text direct (chỉ mỗi 2 giây thay vì mỗi frame)
+            current_time = time.time()
+            if not hasattr(self, '_last_overlay_update'):
+                self._last_overlay_update = 0
+            
+            if current_time - self._last_overlay_update >= 1.0:
+                self._overlay_text_cached = self._get_overlay_text()
+                self._last_overlay_update = current_time
+            
+            # Dùng cached text
+            if hasattr(self, '_overlay_text_cached'):
+                overlay_text = self._overlay_text_cached
+                lines = overlay_text.split('\n')
+                y_offset = 10
+                for line in lines:
+                    cv2.putText(frame, line, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    y_offset += 25
 
             # Write video frame
             current_writer.write(frame)
 
-            # Push frame for MJPEG stream
+            # Push frame for MJPEG stream (chỉ giữ frame mới nhất)
             with self.frame_lock:
-                self.frame_queue.append(frame)
+                self.frame_queue = [frame]  # Overwrite thay vì append
 
             # Check if need new segment
             if self.segment_manager.should_start_new():
@@ -821,6 +836,22 @@ class PiStreamer:
 
         # 2️⃣ Dừng video/audio/mux threads
         self.stop()
+        
+        # 2.5️⃣ Force release camera nếu còn tồn đọng
+        if hasattr(self, 'cap') and self.cap is not None:
+            try:
+                if self.cap.isOpened():
+                    self.cap.release()
+                    print("📹 Camera đã được release")
+                    time.sleep(0.5)  # Đợi driver reset
+            except Exception as e:
+                print(f"⚠️ Lỗi release camera: {e}")
+        
+        # Force giải phóng tài nguyên OpenCV
+        try:
+            cv2.destroyAllWindows()
+        except:
+            pass
 
         # 3️⃣ Tắt LED (nếu có)
         if hasattr(self, 'led_control'):
