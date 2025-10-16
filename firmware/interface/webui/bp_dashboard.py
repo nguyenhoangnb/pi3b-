@@ -54,8 +54,8 @@ _HTML = r"""
       <button onclick="switchTab('recorded')" class="tab-btn" id="recordedBtn">Recorded Videos</button>
     </div>
     <div id="liveView" class="tab-content active">
-      <iframe id="videoStream" src="/live/stream" style="width:100%; aspect-ratio: 4/3; max-height:70vh; border:none; border-radius:8px; background:#000;" allowfullscreen></iframe>
-      <small>WebSocket stream (~{{video_fps}}fps) qua port 8080 proxy. Real-time từ recorder service.</small>
+      <video id="videoStream" controls autoplay muted style="width:100%; aspect-ratio: 4/3; max-height:70vh; background:#000; border-radius:8px;"></video>
+      <small>HLS stream (~{{video_fps}}fps). Real-time từ recorder service via FFmpeg.</small>
     </div>
     <div id="recordedView" class="tab-content">
       <div id="playerContainer">
@@ -223,7 +223,54 @@ video,img{width:100%;max-height:62vh;background:#000;border-radius:12px}
     .video-size { margin-top: 4px; }
 }
 </style>
+<script src="/static/hls.min.js"></script>
 <script>
+// Initialize HLS player for live stream
+document.addEventListener('DOMContentLoaded', function() {
+    const video = document.getElementById('videoStream');
+    const hlsUrl = 'http://localhost:5000/hls/stream.m3u8';
+    
+    if (Hls.isSupported()) {
+        const hls = new Hls({
+            maxBufferLength: 4,
+            maxMaxBufferLength: 10,
+            lowLatencyMode: true
+        });
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, function() {
+            console.log('✅ HLS manifest loaded');
+            video.play().catch(e => console.log('Autoplay prevented:', e));
+        });
+        hls.on(Hls.Events.ERROR, function(event, data) {
+            console.error('HLS Error:', data);
+            if (data.fatal) {
+                switch(data.type) {
+                    case Hls.ErrorTypes.NETWORK_ERROR:
+                        console.log('Network error, trying to recover...');
+                        hls.startLoad();
+                        break;
+                    case Hls.ErrorTypes.MEDIA_ERROR:
+                        console.log('Media error, trying to recover...');
+                        hls.recoverMediaError();
+                        break;
+                    default:
+                        console.log('Fatal error, destroying HLS...');
+                        hls.destroy();
+                        break;
+                }
+            }
+        });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Native HLS support (Safari, iOS)
+        video.src = hlsUrl;
+        video.addEventListener('loadedmetadata', function() {
+            console.log('✅ Native HLS loaded');
+            video.play().catch(e => console.log('Autoplay prevented:', e));
+        });
+    }
+});
+
 function switchTab(tab) {
     // Update buttons
     document.querySelectorAll('.tab-btn').forEach(btn => {

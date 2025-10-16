@@ -1,28 +1,11 @@
 from __future__ import annotations
 from flask import Blueprint, Response, request, abort, render_template_string
-from flask_socketio import emit
-from werkzeug.middleware.proxy_fix import ProxyFix
-import time
 from functools import wraps
 import re
-import socketio as sio_client  # Socket.IO client để kết nối đến recorder
 
 # ============================================================
 # CONFIG & SECURITY
 # ============================================================
-RECORDER_TIMEOUT=100
-# Allowed IP ranges (adjust these to match your legitimate client IPs)
-ALLOWED_IPS = [
-    '127.0.0.1',      # localhost
-    '192.168.0.0/16', # typical LAN
-    '10.0.0.0/8',     # private network
-    '172.16.0.0/12'   # private network
-]
-
-def is_ip_allowed(ip: str) -> bool:
-    """Check if IP is in allowed ranges - DISABLED cho public access"""
-    # Cho phép tất cả IP truy cập (vì đã có router firewall bảo vệ)
-    return True
 
 def validate_request(f):
     """Decorator to validate requests - SIMPLIFIED cho public access"""
@@ -39,49 +22,8 @@ def validate_request(f):
 
 bp = Blueprint("liveview", __name__)
 
-# URL của recorder service WebSocket (local only - không public)
-RECORDER_WS_URL = "http://localhost:5000"  # WebSocket endpoint
-
-# SocketIO client để kết nối đến recorder
-recorder_client = None
-
-def setup_socketio_proxy(socketio_server):
-    """Setup WebSocket proxy: WebUI (port 8080) <-> Recorder (port 5000)"""
-    global recorder_client
-    
-    print("🔧 Setting up WebSocket proxy...")
-    
-    # Tạo Socket.IO client kết nối đến recorder
-    recorder_client = sio_client.Client(reconnection=True, reconnection_attempts=0)
-    
-    @recorder_client.on('connect')
-    def on_recorder_connect():
-        print("✅ Proxy connected to recorder (port 5000)")
-    
-    @recorder_client.on('disconnect')
-    def on_recorder_disconnect():
-        print("❌ Proxy disconnected from recorder")
-    
-    @recorder_client.on('video_frame')
-    def on_recorder_video_frame(data):
-        """Forward video frames từ recorder đến tất cả WebUI clients"""
-        socketio_server.emit('video_frame', data, namespace='/')
-    
-    # Kết nối đến recorder
-    try:
-        recorder_client.connect(RECORDER_WS_URL, transports=['websocket'])
-        print(f"📡 WebSocket proxy started: WebUI (8080) -> Recorder (5000)")
-    except Exception as e:
-        print(f"⚠️ Could not connect to recorder: {e}")
-    
-    # Handlers cho WebUI clients
-    @socketio_server.on('connect')
-    def handle_client_connect():
-        print(f"👥 Client connected to WebUI proxy")
-    
-    @socketio_server.on('disconnect')
-    def handle_client_disconnect():
-        print(f"👋 Client disconnected from WebUI proxy")
+# URL của recorder service HLS stream
+RECORDER_HLS_URL = "http://localhost:5000/hls/stream.m3u8"
 
 # ============================================================
 # ROUTES
@@ -90,14 +32,14 @@ def setup_socketio_proxy(socketio_server):
 @bp.get("/live")
 @validate_request
 def live_video():
-    """Return HTML page with WebSocket video player - kết nối trực tiếp đến recorder WS."""
+    """Return HTML page with HLS video player"""
     html = """
     <!DOCTYPE html>
     <html>
     <head>
         <title>Live Camera Stream</title>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <script src="/static/socket.io.js"></script>
+        <script src="/static/hls.min.js"></script>
         <style>
             body { 
                 margin: 0; 
@@ -139,46 +81,70 @@ def live_video():
     </head>
     <body>
         <h2>📷 Live Camera Stream</h2>
-        <p class="status" id="status">● Connecting to recorder...</p>
-        <img id="videoStream" src="" alt="Live Stream">
-        <p class="info">Stream via WebSocket from recorder service (port 5000)</p>
+        <p class="status" id="status">● Connecting to HLS stream...</p>
+        <video id="videoStream" controls autoplay muted></video>
+        <p class="info">HLS stream from recorder service (port 5000)</p>
         
         <script>
             const statusEl = document.getElementById('status');
-            const videoEl = document.getElementById('videoStream');
+            const video = document.getElementById('videoStream');
+            const hlsUrl = 'http://localhost:5000/hls/stream.m3u8';
             
-            // Kết nối đến WebUI WebSocket proxy (cùng server, không cần port 5000)
-            const socket = io({
-                transports: ['websocket'],
-                reconnection: true,
-                reconnectionDelay: 1000,
-                reconnectionDelayMax: 5000,
-                reconnectionAttempts: Infinity
-            });
-            
-            socket.on('connect', () => {
-                console.log('✅ Connected to WebUI proxy');
-                statusEl.className = 'status';
-                statusEl.textContent = '● Streaming via WebSocket proxy (port 8080)';
-            });
-            
-            socket.on('disconnect', () => {
-                console.log('❌ Disconnected from WebUI proxy');
+            if (Hls.isSupported()) {
+                const hls = new Hls({
+                    maxBufferLength: 4,
+                    maxMaxBufferLength: 10,
+                    lowLatencyMode: true
+                });
+                
+                hls.loadSource(hlsUrl);
+                hls.attachMedia(video);
+                
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    console.log('✅ HLS manifest loaded');
+                    statusEl.className = 'status';
+                    statusEl.textContent = '● Streaming via HLS';
+                    video.play().catch(e => {
+                        console.log('Autoplay prevented:', e);
+                        statusEl.textContent = '● Click to play';
+                    });
+                });
+                
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    console.error('HLS Error:', data);
+                    if (data.fatal) {
+                        statusEl.className = 'error';
+                        statusEl.textContent = '✖ Stream error: ' + data.type;
+                        
+                        switch(data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                console.log('Network error, trying to recover...');
+                                hls.startLoad();
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log('Media error, trying to recover...');
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                console.log('Fatal error, destroying HLS...');
+                                hls.destroy();
+                                break;
+                        }
+                    }
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Native HLS support (Safari, iOS)
+                video.src = hlsUrl;
+                video.addEventListener('loadedmetadata', function() {
+                    console.log('✅ Native HLS loaded');
+                    statusEl.className = 'status';
+                    statusEl.textContent = '● Streaming via HLS (native)';
+                    video.play().catch(e => console.log('Autoplay prevented:', e));
+                });
+            } else {
                 statusEl.className = 'error';
-                statusEl.textContent = '✖ Disconnected from server';
-                videoEl.src = '';
-            });
-            
-            socket.on('video_frame', (data) => {
-                // Nhận base64 frame từ WebUI proxy
-                videoEl.src = 'data:image/jpeg;base64,' + data.frame;
-            });
-            
-            socket.on('connect_error', (error) => {
-                console.error('Connection error:', error);
-                statusEl.className = 'error';
-                statusEl.textContent = '✖ Cannot connect to server';
-            });
+                statusEl.textContent = '✖ HLS not supported in this browser';
+            }
         </script>
     </body>
     </html>
@@ -188,13 +154,13 @@ def live_video():
 @bp.get("/live/stream")
 @validate_request
 def live_stream_embed():
-    """Return embeddable WebSocket stream page for iframe/img tag."""
+    """Return embeddable HLS stream page for iframe"""
     html = """
     <!DOCTYPE html>
     <html>
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <script src="/static/socket.io.js"></script>
+        <script src="/static/hls.min.js"></script>
         <style>
             * { margin: 0; padding: 0; }
             body { 
@@ -208,43 +174,50 @@ def live_stream_embed():
                 height: 100%;
                 object-fit: contain;
                 display: block;
-                max-width: 100%;
-                max-height: 100%;
             }
         </style>
     </head>
     <body>
-        <img id="videoStream" src="" alt="Live Stream">
+        <video id="videoStream" controls autoplay muted></video>
         
         <script>
-            const videoEl = document.getElementById('videoStream');
+            const video = document.getElementById('videoStream');
+            const hlsUrl = 'http://localhost:5000/hls/stream.m3u8';
             
-            // Kết nối đến WebUI WebSocket proxy (cùng server, không cần port 5000)
-            const socket = io({
-                transports: ['websocket'],
-                reconnection: true,
-                reconnectionDelay: 1000,
-                reconnectionDelayMax: 5000,
-                reconnectionAttempts: Infinity
-            });
-            
-            socket.on('connect', () => {
-                console.log('✅ Connected to WebUI proxy');
-            });
-            
-            socket.on('disconnect', () => {
-                console.log('❌ Disconnected from WebUI proxy');
-                videoEl.src = '';
-            });
-            
-            socket.on('video_frame', (data) => {
-                // Nhận base64 frame từ WebUI proxy
-                videoEl.src = 'data:image/jpeg;base64,' + data.frame;
-            });
-            
-            socket.on('connect_error', (error) => {
-                console.error('Connection error:', error);
-            });
+            if (Hls.isSupported()) {
+                const hls = new Hls({
+                    maxBufferLength: 4,
+                    maxMaxBufferLength: 10,
+                    lowLatencyMode: true
+                });
+                hls.loadSource(hlsUrl);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    console.log('✅ HLS manifest loaded');
+                    video.play().catch(e => console.log('Autoplay prevented:', e));
+                });
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    if (data.fatal) {
+                        console.error('Fatal HLS error:', data);
+                        switch(data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                hls.startLoad();
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                hls.destroy();
+                                break;
+                        }
+                    }
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = hlsUrl;
+                video.addEventListener('loadedmetadata', function() {
+                    video.play().catch(e => console.log('Autoplay prevented:', e));
+                });
+            }
         </script>
     </body>
     </html>
@@ -255,18 +228,17 @@ def live_stream_embed():
 @validate_request
 def stream_health():
     """Endpoint kiểm tra trạng thái stream."""
-    # Kiểm tra recorder có sẵn không
     try:
         import requests
-        response = requests.head("http://localhost:5000", timeout=2)
+        response = requests.head("http://localhost:5000/health", timeout=2)
         is_healthy = response.status_code == 200
     except:
         is_healthy = False
     
     health = {
         "status": "healthy" if is_healthy else "degraded",
-        "recorder_url": RECORDER_WS_URL,
-        "stream_type": "websocket"
+        "recorder_url": RECORDER_HLS_URL,
+        "stream_type": "hls"
     }
     
     response = Response(
