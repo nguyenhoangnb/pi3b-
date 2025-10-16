@@ -160,13 +160,14 @@ class FFmpegRecorder:
             return None
         
         try:
-            # List of devices to test (plughw is more compatible than hw)
+            # List of devices to test (prioritize USB devices since card 0 is headphones only)
+            # Card 1: HD camera microphone, Card 2: USB Audio Device
             test_devices = [
-                "plughw:0,0",  # Usually main audio input
-                "plughw:0,6",  # Digital microphone
-                "plughw:1,0",  # USB audio if available
-                "hw:1,0",      # USB audio direct
-                "hw:0,0",      # Main audio direct
+                "plughw:1,0",  # HD camera microphone (most likely)
+                "plughw:2,0",  # USB Audio Device
+                "hw:1,0",      # HD camera direct
+                "hw:2,0",      # USB Audio direct
+                "plughw:0,0",  # Headphones (probably no input)
             ]
             
             print("🔍 Testing audio devices...")
