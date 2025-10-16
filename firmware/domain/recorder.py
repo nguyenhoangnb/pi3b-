@@ -827,14 +827,15 @@ class PiStreamer:
             # Kiểm tra camera còn hoạt động không
             if cap is None or not cap.isOpened():
                 print("⚠️ Camera không khả dụng, thử reconnect...")
+                print(f"   ↳ cap={cap}, isOpened={cap.isOpened() if cap else 'N/A'}")
                 
                 # Đóng camera hiện tại nếu có
                 try:
                     if cap is not None:
                         cap.release()
                     time.sleep(1)  # Đợi driver reset
-                except:
-                    pass
+                except Exception as e:
+                    print(f"   ⚠️ Lỗi release camera cũ: {e}")
                 
                 # Thử reconnect
                 reconnect_attempts += 1
@@ -894,10 +895,13 @@ class PiStreamer:
                     cv2.putText(frame, line, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                     y_offset += 25
 
-            # Write video frame (kiểm tra writer trước)
+            # Write video frame (kiểm tra writer trước - CRITICAL cho segment transition)
             try:
-                if current_writer and current_writer.isOpened():
+                if current_writer is not None and current_writer.isOpened():
                     current_writer.write(frame)
+                elif current_writer is None:
+                    # Writer đang trong quá trình transition, skip frame này
+                    pass
                 else:
                     print("⚠️ VideoWriter không mở được, bỏ qua frame")
             except Exception as e:
@@ -909,54 +913,93 @@ class PiStreamer:
 
             # Check if need new segment
             if self.segment_manager.should_start_new():
-                print("🔄 Bắt đầu segment mới...")
+                segment_time = time.time() - self.segment_manager.segment_start
+                print(f"🔄 Bắt đầu segment mới (segment vừa kết thúc: {segment_time:.1f}s)...")
                 
-                # Release video writer và đợi file flush
+                # 1. STOP writing frames temporarily
+                old_writer = current_writer
+                current_writer = None  # Ngừng ghi frame tạm thời
+                print(f"   ↳ Stopped frame writing temporarily")
+                
+                # 2. Release old writer và đợi file flush
                 try:
-                    current_writer.release()
-                    time.sleep(0.5)  # Đợi OS flush file ra disk
-                    print("   ✅ Đã release video writer")
+                    if old_writer and old_writer.isOpened():
+                        old_writer.release()
+                        print("   ✅ Đã release video writer")
+                    time.sleep(1.0)  # Đợi OS flush file ra disk (Pi cần nhiều thời gian)
                 except Exception as e:
                     print(f"   ⚠️ Lỗi release writer: {e}")
                 
+                # 3. Mark video complete
                 self.segment_manager.mark_complete('video')
                 
-                # Đợi audio hoàn thành và ghép file
-                if self.segment_manager.wait_for_merge(timeout=2.0):
-                    self._mux_to_mp4()
+                # 4. Đợi audio hoàn thành và ghép file (trong thread riêng để không block)
+                merge_thread = threading.Thread(target=lambda: (
+                    self.segment_manager.wait_for_merge(timeout=3.0) and self._mux_to_mp4()
+                ), daemon=True)
+                merge_thread.start()
                 
-                # Tạo segment mới TRƯỚC KHI khởi tạo writer mới
+                # 5. Tạo segment mới NGAY (không đợi merge)
                 current_segment = self.segment_manager.start_new_segment()
                 print(f"   ↳ Segment mới: {os.path.basename(current_segment)}")
                 
-                # Khởi tạo writer mới
+                # 6. Khởi tạo writer mới TRƯỚC KHI tiếp tục ghi
                 try:
-                    current_writer = cv2.VideoWriter(
+                    new_writer = cv2.VideoWriter(
                         f"{current_segment}.avi",
                         cv2.VideoWriter_fourcc(*'XVID'),
                         self.video_fps,
                         (self.video_width, self.video_height)
                     )
                     
-                    if not current_writer.isOpened():
-                        print("   ⚠️ Không thể mở VideoWriter mới!")
-                    else:
-                        print("   ✅ VideoWriter mới đã sẵn sàng")
+                    if not new_writer.isOpened():
+                        print("   ⚠️ Không thể mở VideoWriter mới! Thử lại...")
+                        time.sleep(0.5)
+                        new_writer = cv2.VideoWriter(
+                            f"{current_segment}.avi",
+                            cv2.VideoWriter_fourcc(*'XVID'),
+                            self.video_fps,
+                            (self.video_width, self.video_height)
+                        )
+                        if not new_writer.isOpened():
+                            print("   ❌ CRITICAL: Không thể tạo VideoWriter!")
+                            cap = None  # Force reconnect camera
+                            continue
+                    
+                    current_writer = new_writer
+                    print("   ✅ VideoWriter mới đã sẵn sàng")
                         
                 except Exception as e:
-                    print(f"   ⚠️ Lỗi tạo VideoWriter: {e}")
+                    print(f"   ❌ Lỗi tạo VideoWriter: {e}")
+                    cap = None  # Force reconnect camera
+                    continue
 
             time.sleep(1 / self.video_fps)  # Control FPS
 
-        # Final segment - release và flush
-        current_writer.release()
-        time.sleep(0.5)  # Đợi OS flush file ra disk
+        # Final segment - release và flush (với protection)
+        print("🛑 Video thread stopping, releasing resources...")
+        try:
+            if current_writer and current_writer.isOpened():
+                current_writer.release()
+                print("   ✅ Released final video writer")
+                time.sleep(1.0)  # Đợi OS flush file ra disk
+            
+            self.segment_manager.mark_complete('video')
+            
+            # Merge final segment trong timeout ngắn
+            if self.segment_manager.wait_for_merge(timeout=3.0):
+                self._mux_to_mp4()
+        except Exception as e:
+            print(f"   ⚠️ Lỗi cleanup video writer: {e}")
         
-        self.segment_manager.mark_complete('video')
-        if self.segment_manager.wait_for_merge(timeout=2.0):
-            self._mux_to_mp4()
+        # Release camera
+        try:
+            if cap and cap.isOpened():
+                cap.release()
+                print("   ✅ Released camera")
+        except Exception as e:
+            print(f"   ⚠️ Lỗi release camera: {e}")
         
-        cap.release()
         print("✅ Video thread stopped.")
 
     def start(self):
