@@ -736,7 +736,7 @@ class PiStreamer:
             # Đọc frame
             ret, frame = cap.read()
             if not ret:
-                print("⚠️ Không đọc được frame")
+                print(f"⚠️ Không đọc được frame (cap.isOpened={cap.isOpened() if cap else 'None'})")
                 time.sleep(0.5)
                 continue
 
@@ -761,8 +761,14 @@ class PiStreamer:
                     cv2.putText(frame, line, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                     y_offset += 25
 
-            # Write video frame
-            current_writer.write(frame)
+            # Write video frame (kiểm tra writer trước)
+            try:
+                if current_writer and current_writer.isOpened():
+                    current_writer.write(frame)
+                else:
+                    print("⚠️ VideoWriter không mở được, bỏ qua frame")
+            except Exception as e:
+                print(f"⚠️ Lỗi ghi frame: {e}")
 
             # Push frame for MJPEG stream (chỉ giữ frame mới nhất)
             with self.frame_lock:
@@ -770,23 +776,42 @@ class PiStreamer:
 
             # Check if need new segment
             if self.segment_manager.should_start_new():
+                print("🔄 Bắt đầu segment mới...")
+                
                 # Release video writer và đợi file flush
-                current_writer.release()
-                time.sleep(0.5)  # Đợi OS flush file ra disk
+                try:
+                    current_writer.release()
+                    time.sleep(0.5)  # Đợi OS flush file ra disk
+                    print("   ✅ Đã release video writer")
+                except Exception as e:
+                    print(f"   ⚠️ Lỗi release writer: {e}")
                 
                 self.segment_manager.mark_complete('video')
                 
                 # Đợi audio hoàn thành và ghép file
                 if self.segment_manager.wait_for_merge(timeout=2.0):
                     self._mux_to_mp4()
-                    
+                
+                # Tạo segment mới TRƯỚC KHI khởi tạo writer mới
                 current_segment = self.segment_manager.start_new_segment()
-                current_writer = cv2.VideoWriter(
-                    f"{current_segment}.avi",
-                    cv2.VideoWriter_fourcc(*'XVID'),
-                    self.video_fps,
-                    (self.video_width, self.video_height)
-                )
+                print(f"   ↳ Segment mới: {os.path.basename(current_segment)}")
+                
+                # Khởi tạo writer mới
+                try:
+                    current_writer = cv2.VideoWriter(
+                        f"{current_segment}.avi",
+                        cv2.VideoWriter_fourcc(*'XVID'),
+                        self.video_fps,
+                        (self.video_width, self.video_height)
+                    )
+                    
+                    if not current_writer.isOpened():
+                        print("   ⚠️ Không thể mở VideoWriter mới!")
+                    else:
+                        print("   ✅ VideoWriter mới đã sẵn sàng")
+                        
+                except Exception as e:
+                    print(f"   ⚠️ Lỗi tạo VideoWriter: {e}")
 
             time.sleep(1 / self.video_fps)  # Control FPS
 
