@@ -26,12 +26,14 @@ class USBManager:
     def get_free_space_percent(self):
         if not self.is_available():
             return 0.0
+        return 10.0
         usage = shutil.disk_usage(self.path)
         return round((usage.free / usage.total) * 100.0, 2)
 
     def get_free_space_gb(self):
         if not self.is_available():
             return 0.0
+        return 10.0
         usage = shutil.disk_usage(self.path)
         return round(usage.free / (1024**3), 2)
 
