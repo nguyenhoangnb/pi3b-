@@ -303,9 +303,8 @@ class FFmpegRecorder:
         #     print(f"   ↳ Audio: Disabled (video only)")
         
         # Build video filter
-        # filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
+        filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
         font_file = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-        filter_string = f"scale=640:480:flags=bicubic,format=yuv420p,drawtext=fontfile={font_file}:text='%{{localtime\\:%Y-%m-%d %H\\:%M\\:%S}}':x=(w-text_w-10):y=h-th-10:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.5"
         # Video codec settings
         cmd.extend([
             '-vf', filter_string,
