@@ -47,25 +47,25 @@ class FFmpegRecorder:
         self.led_control = gpioLed(self.config['gpio'].get('record_led', 26))
         
         # RTC
-        try:
-            self.rtc = rtcModule()
-            self.rtc_available = True
-            print("✅ RTC initialized")
-        except Exception as e:
-            print(f"⚠️ RTC not available: {e}")
-            self.rtc_available = False
+        # try:
+        #     self.rtc = rtcModule()
+        #     self.rtc_available = True
+        #     print("✅ RTC initialized")
+        # except Exception as e:
+        #     print(f"⚠️ RTC not available: {e}")
+        #     self.rtc_available = False
         
-        # GNSS
-        try:
-            if self.config['capabilities'].get('gnss', False):
-                self.gnss = GNSSModule()
-                self.gnss_available = True
-                print("✅ GNSS initialized")
-            else:
-                self.gnss_available = False
-        except Exception as e:
-            print(f"⚠️ GNSS not available: {e}")
-            self.gnss_available = False
+        # # GNSS
+        # try:
+        #     if self.config['capabilities'].get('gnss', False):
+        #         self.gnss = GNSSModule()
+        #         self.gnss_available = True
+        #         print("✅ GNSS initialized")
+        #     else:
+        #         self.gnss_available = False
+        # except Exception as e:
+        #     print(f"⚠️ GNSS not available: {e}")
+        #     self.gnss_available = False
         
         # USB Storage Manager
         self.usb_manager = USBManager(
@@ -254,22 +254,22 @@ class FFmpegRecorder:
         # Get devices - UPDATED: Audio now returns dict or None
         try:
             video_dev = self.get_video_device()
-            audio_info = self.get_audio_device()
+            # audio_info = self.get_audio_device()
         except Exception as e:
             print(f"❌ Device error: {e}")
             return False
         
         # NEW: Quick device lock check/kill
-        devs_to_check = [video_dev]
-        if audio_info:
-            devs_to_check.append(audio_info['device'])
-        for dev in devs_to_check:
-            try:
-                if subprocess.run(['fuser', dev], capture_output=True).returncode == 0:
-                    print(f"⚠️ Device {dev} in use—killing processes")
-                    subprocess.run(['fuser', '-k', dev])
-            except:
-                pass
+        # devs_to_check = [video_dev]
+        # if audio_info:
+        #     devs_to_check.append(audio_info['device'])
+        # for dev in devs_to_check:
+        #     try:
+        #         if subprocess.run(['fuser', dev], capture_output=True).returncode == 0:
+        #             print(f"⚠️ Device {dev} in use—killing processes")
+        #             subprocess.run(['fuser', '-k', dev])
+        #     except:
+        #         pass
         
         # Parse video settings
         video_size = self.config['video']['v4l2_format']  # "640x480"
@@ -289,18 +289,18 @@ class FFmpegRecorder:
         ]
         
         # Add audio input if available
-        if audio_info:
-            cmd.extend([
-                '-f', 'alsa',
-                '-channels', str(audio_info['channels']),
-                '-sample_rate', str(audio_info['rate']),
-                '-i', audio_info['device'],
-                # NEW: Thread queue for Pi limits
-                '-thread_queue_size', '512',
-            ])
-            print(f"   ↳ Audio: {audio_info['device']} ({audio_info['channels']}ch @ {audio_info['rate']}Hz)")
-        else:
-            print(f"   ↳ Audio: Disabled (video only)")
+        # if audio_info:
+        #     cmd.extend([
+        #         '-f', 'alsa',
+        #         '-channels', str(audio_info['channels']),
+        #         '-sample_rate', str(audio_info['rate']),
+        #         '-i', audio_info['device'],
+        #         # NEW: Thread queue for Pi limits
+        #         '-thread_queue_size', '512',
+        #     ])
+        #     print(f"   ↳ Audio: {audio_info['device']} ({audio_info['channels']}ch @ {audio_info['rate']}Hz)")
+        # else:
+        #     print(f"   ↳ Audio: Disabled (video only)")
         
         # Build video filter
         filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
@@ -325,13 +325,13 @@ class FFmpegRecorder:
         ])
         
         # Audio codec if available
-        if audio_info:
-            cmd.extend([
-                '-c:a', 'aac',
-                '-b:a', '128k',
-                # NEW: A/V sync
-                '-async', '1',
-            ])
+        # if audio_info:
+        #     cmd.extend([
+        #         '-c:a', 'aac',
+        #         '-b:a', '128k',
+        #         # NEW: A/V sync
+        #         '-async', '1',
+        #     ])
         
         # Tee muxer setup
         timestamp_pattern = f"{self.output_dir}/%Y%m%d_%H%M%S_cam0.mp4"
@@ -341,8 +341,8 @@ class FFmpegRecorder:
             '-map', '0:v',  # Video map
         ])
         
-        if audio_info:
-            cmd.extend(['-map', '1:a'])  # Audio map
+        # if audio_info:
+        #     cmd.extend(['-map', '1:a'])  # Audio map
         
         # Tee output
         tee_output = (
@@ -472,21 +472,21 @@ class FFmpegRecorder:
         
         self.stop_recording()
         
-        if hasattr(self, 'gnss') and self.gnss_available:
-            try:
-                self.gnss.close()
-                print("📡 GNSS closed")
-            except:
-                pass
+        # if hasattr(self, 'gnss') and self.gnss_available:
+        #     try:
+        #         self.gnss.close()
+        #         print("📡 GNSS closed")
+        #     except:
+        #         pass
         
-        if hasattr(self, 'rtc') and self.rtc_available:
-            try:
-                self.rtc.close()
-                print("⏰ RTC closed")
-            except:
-                pass
+        # if hasattr(self, 'rtc') and self.rtc_available:
+        #     try:
+        #         self.rtc.close()
+        #         print("⏰ RTC closed")
+        #     except:
+        #         pass
         
-        print("✅ Cleanup complete")
+        # print("✅ Cleanup complete")
 
 
 # Global recorder instance
