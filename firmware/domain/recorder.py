@@ -145,15 +145,39 @@ class OpenCVRecorder:
         
         raise Exception("No camera found")
     
+    def _create_new_writer(self):
+        """Helper to create a new video writer"""
+        video_size = self.config['video']['v4l2_format']  # "640x480"
+        video_fps = self.config['video']['v4l2_fps']
+        width, height = map(int, video_size.split('x'))
+        
+        # Sử dụng XVID cho AVI (tương thích cao, dễ test; thay 'mp4v' nếu muốn MP4)
+        fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Hoặc 'mp4v' cho MP4
+        now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ext = '.avi' if fourcc == cv2.VideoWriter_fourcc(*'XVID') else '.mp4'
+        filename = f"{self.output_dir}/{now_str}_cam0{ext}"
+        
+        writer = cv2.VideoWriter(str(filename), fourcc, video_fps, (width, height))
+        if writer.isOpened():
+            print(f"📹 New segment: {filename}")
+            return writer, filename
+        else:
+            print(f"❌ Failed to create writer for {filename}")
+            return None, None
+    
     def _recording_loop(self):
         """Main recording loop in thread"""
         video_size = self.config['video']['v4l2_format']  # "640x480"
         video_fps = self.config['video']['v4l2_fps']
         width, height = map(int, video_size.split('x'))
         
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        
         self.segment_start = time.time()
+        
+        # Tạo writer đầu tiên ngay lập tức (sửa lỗi drop frames đầu)
+        self.video_writer, _ = self._create_new_writer()
+        if not self.video_writer or not self.video_writer.isOpened():
+            print("❌ Cannot start recording: Writer failed")
+            return
         
         while not self._stop_flag:
             ret, frame = self.cap.read()
@@ -200,7 +224,11 @@ class OpenCVRecorder:
             except queue.Full:
                 pass  # Drop frame if queue full
             
-            # Check if new segment needed
+            # Write frame ngay lập tức (trước check segment)
+            if self.video_writer and self.video_writer.isOpened():
+                self.video_writer.write(frame)
+            
+            # Check if new segment needed (sau write để không drop)
             current_time = time.time()
             if current_time - self.segment_start >= self.segment_seconds:
                 # Close current writer
@@ -209,22 +237,18 @@ class OpenCVRecorder:
                     print(f"✅ Segment saved, elapsed: {current_time - self.segment_start:.1f}s")
                 
                 # Start new segment
-                now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"{self.output_dir}/{now_str}_cam0.mp4"
-                self.video_writer = cv2.VideoWriter(filename, fourcc, video_fps, (width, height))
-                print(f"📹 New segment: {filename}")
+                self.video_writer, _ = self._create_new_writer()
+                if not self.video_writer:
+                    print("⚠️ Failed to create next writer - stopping")
+                    break
                 
                 self.segment_start = current_time
             
-            # Write frame if writer is open
-            if self.video_writer:
-                self.video_writer.write(frame)
-            
-            # Sleep to match FPS
-            time.sleep(1.0 / video_fps)
+            # Sleep to match FPS (cải thiện timing)
+            time.sleep(max(0.001, 1.0 / video_fps))  # Tránh sleep âm nếu lệch
         
-        # Cleanup on stop
-        if self.video_writer:
+        # Cleanup on stop (flush cuối)
+        if self.video_writer and self.video_writer.isOpened():
             self.video_writer.release()
             print("✅ Final segment saved")
         print("🛑 Recording loop stopped")
@@ -305,7 +329,8 @@ class OpenCVRecorder:
         
         if not self.cap.isOpened():
             print("❌ Failed to open camera")
-            self.cap.release()
+            if self.cap:
+                self.cap.release()
             return False
         
         print(f"🎬 Starting OpenCV recording...")
@@ -349,9 +374,11 @@ class OpenCVRecorder:
         if self.recording_thread:
             self.recording_thread.join(timeout=5)
         
-        # Release resources
-        if self.video_writer:
+        # Release resources (flush writer)
+        if self.video_writer and self.video_writer.isOpened():
             self.video_writer.release()
+            print("✅ Writer flushed on stop")
+        
         if self.cap:
             self.cap.release()
         
