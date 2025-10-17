@@ -334,7 +334,10 @@ class FFmpegRecorder:
         #     ])
         
         # Tee muxer setup
-        timestamp_pattern = f"{self.output_dir}/%Y%m%d_%H%M%S_cam0.mp4"
+        # NEW: Get current system time for segment naming
+        from datetime import datetime
+        start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp_pattern = f"{self.output_dir}/{start_time}_cam0_%03d.mp4"
         
         cmd.extend([
             '-f', 'tee',
@@ -344,10 +347,10 @@ class FFmpegRecorder:
         # if audio_info:
         #     cmd.extend(['-map', '1:a'])  # Audio map
         
-        # Tee output
+        # Tee output - UPDATED: Use segment format with strftime and index for time-based segments
         tee_output = (
             f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
-            f"reset_timestamps=1:strftime=1]{timestamp_pattern}|"
+            f"reset_timestamps=1:strftime=1:segment_list_flags=live]{timestamp_pattern}|"
             f"[f=hls:hls_time=2:hls_list_size=10:"
             f"hls_flags=delete_segments+independent_segments:"
             f"hls_segment_type=mpegts:start_number=0:"
@@ -358,7 +361,7 @@ class FFmpegRecorder:
         
         print(f"🎬 Starting FFmpeg recording...")
         print(f"   ↳ Video: {video_dev} ({video_size} @ {video_fps}fps)")
-        print(f"   ↳ Output: {self.output_dir}/*.mp4")
+        print(f"   ↳ Output: {self.output_dir}/*.mp4 (starting from {start_time})")
         print(f"   ↳ HLS: {self.hls_dir}/stream.m3u8")
         print(f"   ↳ Segment: {self.segment_seconds}s")
         
@@ -432,7 +435,6 @@ class FFmpegRecorder:
             print(f"❌ Failed to start FFmpeg: {e}")
             traceback.print_exc()
             return False
-    
     def stop_recording(self):
         """Stop FFmpeg recording"""
         if not self.is_running():
