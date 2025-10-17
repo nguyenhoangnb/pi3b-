@@ -228,7 +228,7 @@ class FFmpegRecorder:
         
         # Check storage
         if not self.usb_manager.is_available():
-            print("❌ USB storage not available")
+            print("❌ USB storage not available")   
             self.led_control.blink(0.5)
             return False
         
@@ -304,14 +304,16 @@ class FFmpegRecorder:
         #     print(f"   ↳ Audio: Disabled (video only)")
         
         # Build video filter
-        timestamp_text = r"%{localtime\:%Y-%m-%d %H\\\:%M\\\:%S}"
-        drawtext_filter = (
-            f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:"
-            f"text='{timestamp_text}':"
-            f"fontcolor=white:fontsize=20:box=1:boxcolor=black@0.5:"
-            f"boxborderw=5:x=10:y=10"
-        )
-        filter_string = f"scale={width}:{height}:flags=bicubic,format=yuv420p,{drawtext_filter}"
+        filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
+
+        # timestamp_text = r"%{localtime\:%Y-%m-%d %H\\\:%M\\\:%S}"
+        # drawtext_filter = (
+        #     f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:"
+        #     f"text='{timestamp_text}':"
+        #     f"fontcolor=white:fontsize=20:box=1:boxcolor=black@0.5:"
+        #     f"boxborderw=5:x=10:y=10"
+        # )
+        # filter_string = f"scale={width}:{height}:flags=bicubic,format=yuv420p,{drawtext_filter}"
         
         # Video codec settings
         cmd.extend([
