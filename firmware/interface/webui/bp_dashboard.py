@@ -322,9 +322,7 @@ def index():
         current_app.logger.error(f"OSError while accessing {record_root}: {e}")
         st = {'total_gb': 0, 'used_gb': 0, 'free_gb': 0, 'mount': str(record_root)}
     files = []
-    if record_root.exists():
-        files = list_media(record_root)
-    
+
     # Lấy video_fps từ config
     video_fps = cfg_get("video.fps", 15)
     
