@@ -312,12 +312,15 @@ def index():
     
     # Error handling cho disk_info nếu path không tồn tại
     st = {}
-    if record_root.exists():
-        st = disk_info(record_root)
-    else:
-        current_app.logger.warning(f"Record root path not found: {record_root}")
+    try:
+        if record_root.exists():
+            st = disk_info(record_root)
+        else:
+            current_app.logger.warning(f"Record root path not found: {record_root}")
+            st = {'total_gb': 0, 'used_gb': 0, 'free_gb': 0, 'mount': str(record_root)}
+    except OSError as e:
+        current_app.logger.error(f"OSError while accessing {record_root}: {e}")
         st = {'total_gb': 0, 'used_gb': 0, 'free_gb': 0, 'mount': str(record_root)}
-    
     files = []
     if record_root.exists():
         files = list_media(record_root)
