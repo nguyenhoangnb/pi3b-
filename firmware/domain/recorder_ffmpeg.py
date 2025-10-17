@@ -228,7 +228,7 @@ class FFmpegRecorder:
         
         # Check storage
         if not self.usb_manager.is_available():
-            print("❌ USB storage not available")   
+            print("❌ USB storage not available")
             self.led_control.blink(0.5)
             return False
         
@@ -274,7 +274,6 @@ class FFmpegRecorder:
         # Parse video settings
         video_size = self.config['video']['v4l2_format']  # "640x480"
         video_fps = self.config['video']['v4l2_fps']
-        width, height = map(int, video_size.split('x'))
         
         # Build FFmpeg command
         cmd = [
@@ -305,15 +304,6 @@ class FFmpegRecorder:
         
         # Build video filter
         filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
-
-        # timestamp_text = r"%{localtime\:%Y-%m-%d %H\\\:%M\\\:%S}"
-        # drawtext_filter = (
-        #     f"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf:"
-        #     f"text='{timestamp_text}':"
-        #     f"fontcolor=white:fontsize=20:box=1:boxcolor=black@0.5:"
-        #     f"boxborderw=5:x=10:y=10"
-        # )
-        # filter_string = f"scale={width}:{height}:flags=bicubic,format=yuv420p,{drawtext_filter}"
         
         # Video codec settings
         cmd.extend([
@@ -360,7 +350,7 @@ class FFmpegRecorder:
         # Tee output - UPDATED: Use segment format with strftime and index for time-based segments
         tee_output = (
             f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
-            f"reset_timestamps=1]{timestamp_pattern}|"
+            f"reset_timestamps=1:strftime=1:segment_list_flags=live]{timestamp_pattern}|"
             f"[f=hls:hls_time=2:hls_list_size=10:"
             f"hls_flags=delete_segments+independent_segments:"
             f"hls_segment_type=mpegts:start_number=0:"
