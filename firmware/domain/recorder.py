@@ -36,7 +36,7 @@ class OpenCVRecorder:
         self.config = load(self.config_file)
         
         # Paths
-        self.output_dir = self.config['paths']['record_root']
+        self.output_dir = Path(__file__).parent.parent / self.config['paths']['record_root']
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
         
         # Recording settings
