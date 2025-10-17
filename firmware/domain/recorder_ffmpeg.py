@@ -348,7 +348,7 @@ class FFmpegRecorder:
         tee_output = (
             f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
             f"reset_timestamps=1:strftime=1]{timestamp_pattern}|"
-            f"[f=hls:hls_time=2:hls_list_size=10:"
+            f"[f=hls:hls_time={self.segment_seconds}:hls_list_size=10:"
             f"hls_flags=delete_segments+independent_segments:"
             f"hls_segment_type=mpegts:start_number=0:"
             f"hls_segment_filename={self.hls_dir}/segment_%03d.ts]{self.hls_dir}/stream.m3u8"
