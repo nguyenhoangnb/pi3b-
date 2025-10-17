@@ -304,10 +304,9 @@ class FFmpegRecorder:
         
         # Build video filter with timestamp overlay
         filter_string = (
-            'scale=640:480:flags=bicubic,'
-            'format=yuv420p,'
-            f"drawtext=text='%%{{localtime:%%Y-%%m-%%d %%H\\\\:%%M\\\\:%%S}}':"
-            "x=10:y=10:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.5"
+            'scale=640:480:flags=bicubic,format=yuv420p,'
+            'drawtext=text=\'%{localtime\\:%Y-%m-%d %H\\:%M\\:%S}\':'
+            'x=10:y=10:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.5'
         )
         
         # Video codec settings
@@ -352,10 +351,10 @@ class FFmpegRecorder:
         # if audio_info:
         #     cmd.extend(['-map', '1:a'])  # Audio map
         
-        # Tee output - UPDATED: Use segment format with strftime and index for time-based segments
+        # Tee output - FIXED: Removed invalid segment_list_flags
         tee_output = (
             f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
-            f"reset_timestamps=1:strftime=1:segment_list_flags=live]{timestamp_pattern}|"
+            f"reset_timestamps=1:strftime=1]{timestamp_pattern}|"
             f"[f=hls:hls_time=2:hls_list_size=10:"
             f"hls_flags=delete_segments+independent_segments:"
             f"hls_segment_type=mpegts:start_number=0:"
