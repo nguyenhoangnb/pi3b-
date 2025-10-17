@@ -317,11 +317,11 @@ class FFmpegRecorder:
                 break
 
         if font_path:
-            # draw system local time on top-left. Use format that ffmpeg drawtext accepts.
-            # We must double any braces used by .format(), so use a template and .format(font=...)
+            # Build a drawtext filter that shows system local time.
+            # Note: double braces {{ }} are required so .format() doesn't consume the localtime braces.
             template = (
                 "drawtext=fontfile='{font}':"
-                "text='%{{localtime\\:%Y-%m-%d %H\\\\:%M\\\\:%S}}':"
+                "text='%{{localtime:%Y-%m-%d %H\\:%M\\:%S}}':"
                 "fontsize=24:fontcolor=white:box=1:boxcolor=0x00000099:x=10:y=10"
             )
             drawtext = template.format(font=font_path)
