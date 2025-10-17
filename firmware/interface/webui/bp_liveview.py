@@ -127,7 +127,17 @@ def hls_proxy(filename):
 
     recorder_url = f"http://127.0.0.1:5000/hls/{filename}"
     try:
-        resp = requests.get(recorder_url, stream=True, timeout=5)
+        # Forward Range header (and optionally other cache-related headers) so recorder can
+        # respond with partial content (HTTP 206). This helps HLS players request fragments by range.
+        forward_headers = {}
+        if 'Range' in request.headers:
+            forward_headers['Range'] = request.headers['Range']
+        if 'If-Modified-Since' in request.headers:
+            forward_headers['If-Modified-Since'] = request.headers['If-Modified-Since']
+        if 'If-None-Match' in request.headers:
+            forward_headers['If-None-Match'] = request.headers['If-None-Match']
+
+        resp = requests.get(recorder_url, headers=forward_headers or None, stream=True, timeout=10)
     except requests.exceptions.RequestException as e:
         abort(502, f"Recorder service unavailable: {e}")
 
@@ -163,6 +173,15 @@ def hls_proxy(filename):
     # Forward content-length if provided
     if 'Content-Length' in resp.headers:
         response.headers['Content-Length'] = resp.headers['Content-Length']
+
+    # Propagate Accept-Ranges and Content-Range to enable partial requests
+    if 'Accept-Ranges' in resp.headers:
+        response.headers['Accept-Ranges'] = resp.headers['Accept-Ranges']
+    else:
+        response.headers['Accept-Ranges'] = 'bytes'
+
+    if 'Content-Range' in resp.headers:
+        response.headers['Content-Range'] = resp.headers['Content-Range']
 
     return response
 
