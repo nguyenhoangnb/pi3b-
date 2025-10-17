@@ -115,7 +115,7 @@ class OpenCVRecorder:
         def index():
             return {
                 "status": "running" if self.is_running() else "stopped",
-                "output_dir": self.output_dir,
+                "output_dir": str(self.output_dir),
                 "segment_seconds": self.segment_seconds,
                 "stream_port": self.stream_port
             }
@@ -146,34 +146,42 @@ class OpenCVRecorder:
         raise Exception("No camera found")
     
     def _create_new_writer(self):
-        """Helper to create a new video writer"""
+        """Helper to create a new video writer with retry on codec"""
         video_size = self.config['video']['v4l2_format']  # "640x480"
         video_fps = self.config['video']['v4l2_fps']
         width, height = map(int, video_size.split('x'))
         
-        # Sử dụng XVID cho AVI (tương thích cao, dễ test; thay 'mp4v' nếu muốn MP4)
-        fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Hoặc 'mp4v' cho MP4
-        now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        ext = '.avi' if fourcc == cv2.VideoWriter_fourcc(*'XVID') else '.mp4'
-        filename = f"{self.output_dir}/{now_str}_cam0{ext}"
-        
-        writer = cv2.VideoWriter(str(filename), fourcc, video_fps, (width, height))
-        if writer.isOpened():
-            print(f"📹 New segment: {filename}")
-            return writer, filename
-        else:
-            print(f"❌ Failed to create writer for {filename}")
+        # Check writable
+        if not os.access(str(self.output_dir), os.W_OK):
+            print(f"❌ Output dir not writable: {self.output_dir}")
             return None, None
+        
+        # Try codecs
+        codecs = [
+            ('mp4v', '.mp4'),  # MPEG-4, default for MP4
+            ('XVID', '.avi'),  # Fallback AVI
+        ]
+        now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        for codec_str, ext in codecs:
+            fourcc = cv2.VideoWriter_fourcc(*codec_str)
+            filename = f"{self.output_dir}/{now_str}_cam0{ext}"
+            writer = cv2.VideoWriter(str(filename), fourcc, video_fps, (width, height))
+            if writer.isOpened():
+                print(f"📹 New segment created: {filename} (codec: {codec_str})")
+                return writer, filename
+            else:
+                print(f"⚠️ Writer failed for {codec_str}: {filename}")
+                writer.release()  # Clean up
+        
+        print("❌ All codecs failed - cannot create writer")
+        return None, None
     
     def _recording_loop(self):
         """Main recording loop in thread"""
-        video_size = self.config['video']['v4l2_format']  # "640x480"
-        video_fps = self.config['video']['v4l2_fps']
-        width, height = map(int, video_size.split('x'))
-        
         self.segment_start = time.time()
         
-        # Tạo writer đầu tiên ngay lập tức (sửa lỗi drop frames đầu)
+        # Tạo writer đầu tiên ngay lập tức
         self.video_writer, _ = self._create_new_writer()
         if not self.video_writer or not self.video_writer.isOpened():
             print("❌ Cannot start recording: Writer failed")
@@ -224,11 +232,11 @@ class OpenCVRecorder:
             except queue.Full:
                 pass  # Drop frame if queue full
             
-            # Write frame ngay lập tức (trước check segment)
+            # Write frame ngay lập tức
             if self.video_writer and self.video_writer.isOpened():
                 self.video_writer.write(frame)
             
-            # Check if new segment needed (sau write để không drop)
+            # Check if new segment needed
             current_time = time.time()
             if current_time - self.segment_start >= self.segment_seconds:
                 # Close current writer
@@ -236,18 +244,24 @@ class OpenCVRecorder:
                     self.video_writer.release()
                     print(f"✅ Segment saved, elapsed: {current_time - self.segment_start:.1f}s")
                 
-                # Start new segment
+                # Start new segment with retry
                 self.video_writer, _ = self._create_new_writer()
                 if not self.video_writer:
-                    print("⚠️ Failed to create next writer - stopping")
-                    break
+                    print("⚠️ Failed to create next writer - retrying once...")
+                    # Retry with delay
+                    time.sleep(0.5)
+                    self.video_writer, _ = self._create_new_writer()
+                    if not self.video_writer:
+                        print("❌ Retry failed - stopping recording")
+                        self._stop_flag = True
+                        break
                 
                 self.segment_start = current_time
             
-            # Sleep to match FPS (cải thiện timing)
-            time.sleep(max(0.001, 1.0 / video_fps))  # Tránh sleep âm nếu lệch
+            # Sleep to match FPS
+            time.sleep(max(0.001, 1.0 / self.config['video']['v4l2_fps']))
         
-        # Cleanup on stop (flush cuối)
+        # Cleanup on stop
         if self.video_writer and self.video_writer.isOpened():
             self.video_writer.release()
             print("✅ Final segment saved")
