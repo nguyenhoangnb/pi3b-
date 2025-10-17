@@ -117,4 +117,63 @@ def live_video():
 # ============================================================
 
 
+@bp.get("/hls/<path:filename>")
+@validate_request
+def hls_proxy(filename):
+    """Proxy HLS files from recorder service to avoid opening port 5000 to browsers"""
+    # Validate filename to prevent path traversal
+    if not re.match(r'^[a-zA-Z0-9_\-\.\/]+$', filename) or '..' in filename:
+        abort(400, "Invalid filename")
+
+    recorder_url = f"http://127.0.0.1:5000/hls/{filename}"
+    try:
+        resp = requests.get(recorder_url, stream=True, timeout=5)
+    except requests.exceptions.RequestException as e:
+        abort(502, f"Recorder service unavailable: {e}")
+
+    # Determine content type
+    if filename.endswith('.m3u8'):
+        content_type = 'application/vnd.apple.mpegurl'
+    elif filename.endswith('.ts'):
+        content_type = 'video/mp2t'
+    else:
+        content_type = resp.headers.get('Content-Type', 'application/octet-stream')
+
+    def generate():
+        try:
+            for chunk in resp.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        finally:
+            try:
+                resp.close()
+            except:
+                pass
+
+    response = Response(generate(), status=resp.status_code, mimetype=content_type)
+    # Add headers to allow browser access and control caching
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    if filename.endswith('.m3u8'):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    else:
+        response.headers['Cache-Control'] = 'public, max-age=3600'
+
+    # Forward content-length if provided
+    if 'Content-Length' in resp.headers:
+        response.headers['Content-Length'] = resp.headers['Content-Length']
+
+    return response
+
+
+@bp.route('/hls/<path:filename>', methods=['OPTIONS'])
+def hls_proxy_options(filename):
+    response = Response()
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    return response
+
+
 

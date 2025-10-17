@@ -227,8 +227,9 @@ video,img{width:100%;max-height:62vh;background:#000;border-radius:12px}
 <script>
 // Initialize HLS player for live stream
 document.addEventListener('DOMContentLoaded', function() {
-    const video = document.getElementById('videoStream');
-    const hlsUrl = 'http://localhost:5000/hls/stream.m3u8';
+  const video = document.getElementById('videoStream');
+  // Use same-origin proxy route so browser doesn't call port 5000 directly
+  const hlsUrl = '/hls/stream.m3u8';
     
     if (Hls.isSupported()) {
         const hls = new Hls({
