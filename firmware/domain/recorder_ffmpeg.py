@@ -303,7 +303,31 @@ class FFmpegRecorder:
         #     print(f"   ↳ Audio: Disabled (video only)")
         
         # Build video filter
-        filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
+        # Try to find a local TTF font to render the timestamp. If not found, skip drawtext.
+        font_candidates = [
+            '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+            '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+            '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+            '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf',
+        ]
+        font_path = None
+        for p in font_candidates:
+            if Path(p).exists():
+                font_path = p
+                break
+
+        if font_path:
+            # draw system local time on top-left. Use format that ffmpeg drawtext accepts.
+            # We must double any braces used by .format(), so use a template and .format(font=...)
+            template = (
+                "drawtext=fontfile='{font}':"
+                "text='%{{localtime\\:%Y-%m-%d %H\\\\:%M\\\\:%S}}':"
+                "fontsize=24:fontcolor=white:box=1:boxcolor=0x00000099:x=10:y=10"
+            )
+            drawtext = template.format(font=font_path)
+            filter_string = f"{drawtext},scale=640:480:flags=bicubic,format=yuv420p"
+        else:
+            filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
         
         # Video codec settings
         cmd.extend([
