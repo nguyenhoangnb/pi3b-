@@ -302,8 +302,13 @@ class FFmpegRecorder:
         # else:
         #     print(f"   ↳ Audio: Disabled (video only)")
         
-        # Build video filter
-        filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
+        # Build video filter with timestamp overlay
+        filter_string = (
+            'scale=640:480:flags=bicubic,'
+            'format=yuv420p,'
+            f"drawtext=text='%%{{localtime:%%Y-%%m-%%d %%H\\\\:%%M\\\\:%%S}}':"
+            "x=10:y=10:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.5"
+        )
         
         # Video codec settings
         cmd.extend([
@@ -364,6 +369,7 @@ class FFmpegRecorder:
         print(f"   ↳ Output: {self.output_dir}/*.mp4 (starting from {start_time})")
         print(f"   ↳ HLS: {self.hls_dir}/stream.m3u8")
         print(f"   ↳ Segment: {self.segment_seconds}s")
+        print(f"   ↳ Timestamp: Overlayed on top-left of frame")
         
         try:
             # Log command
