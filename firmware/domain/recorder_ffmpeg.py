@@ -260,16 +260,16 @@ class FFmpegRecorder:
             return False
         
         # NEW: Quick device lock check/kill
-        # devs_to_check = [video_dev]
+        devs_to_check = [video_dev]
         # if audio_info:
         #     devs_to_check.append(audio_info['device'])
-        # for dev in devs_to_check:
-        #     try:
-        #         if subprocess.run(['fuser', dev], capture_output=True).returncode == 0:
-        #             print(f"⚠️ Device {dev} in use—killing processes")
-        #             subprocess.run(['fuser', '-k', dev])
-        #     except:
-        #         pass
+        for dev in devs_to_check:
+            try:
+                if subprocess.run(['fuser', dev], capture_output=True).returncode == 0:
+                    print(f"⚠️ Device {dev} in use—killing processes")
+                    subprocess.run(['fuser', '-k', dev])
+            except:
+                pass
         
         # Parse video settings
         video_size = self.config['video']['v4l2_format']  # "640x480"
