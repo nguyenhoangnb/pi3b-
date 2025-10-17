@@ -54,8 +54,8 @@ _HTML = r"""
       <button onclick="switchTab('recorded')" class="tab-btn" id="recordedBtn">Recorded Videos</button>
     </div>
     <div id="liveView" class="tab-content active">
-      <video id="videoStream" controls autoplay muted style="width:100%; aspect-ratio: 4/3; max-height:70vh; background:#000; border-radius:8px;"></video>
-      <small>HLS stream (~{{video_fps}}fps). Real-time từ recorder service via FFmpeg.</small>
+      <img id="videoStream" src="/live/video_feed" alt="Live Stream" style="width:100%; aspect-ratio: 4/3; max-height:70vh; background:#000; border-radius:8px;">
+      <small>MJPEG stream (~{{video_fps}}fps). Real-time từ recorder service via OpenCV.</small>
     </div>
     <div id="recordedView" class="tab-content">
       <div id="playerContainer">
@@ -223,53 +223,19 @@ video,img{width:100%;max-height:62vh;background:#000;border-radius:12px}
     .video-size { margin-top: 4px; }
 }
 </style>
-<script src="/static/hls.min.js"></script>
 <script>
-// Initialize HLS player for live stream
+// Live stream error handling
 document.addEventListener('DOMContentLoaded', function() {
-  const video = document.getElementById('videoStream');
-  // Use same-origin proxy route so browser doesn't call port 5000 directly
-  const hlsUrl = '/hls/stream.m3u8';
-    
-    if (Hls.isSupported()) {
-        const hls = new Hls({
-            maxBufferLength: 4,
-            maxMaxBufferLength: 10,
-            lowLatencyMode: true
-        });
-        hls.loadSource(hlsUrl);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, function() {
-            console.log('✅ HLS manifest loaded');
-            video.play().catch(e => console.log('Autoplay prevented:', e));
-        });
-        hls.on(Hls.Events.ERROR, function(event, data) {
-            console.error('HLS Error:', data);
-            if (data.fatal) {
-                switch(data.type) {
-                    case Hls.ErrorTypes.NETWORK_ERROR:
-                        console.log('Network error, trying to recover...');
-                        hls.startLoad();
-                        break;
-                    case Hls.ErrorTypes.MEDIA_ERROR:
-                        console.log('Media error, trying to recover...');
-                        hls.recoverMediaError();
-                        break;
-                    default:
-                        console.log('Fatal error, destroying HLS...');
-                        hls.destroy();
-                        break;
-                }
-            }
-        });
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Native HLS support (Safari, iOS)
-        video.src = hlsUrl;
-        video.addEventListener('loadedmetadata', function() {
-            console.log('✅ Native HLS loaded');
-            video.play().catch(e => console.log('Autoplay prevented:', e));
-        });
-    }
+  const img = document.getElementById('videoStream');
+  if (img) {
+    img.onerror = function() {
+      console.log('Stream error - retrying...');
+      setTimeout(() => { location.reload(); }, 3000);
+    };
+    img.onload = function() {
+      console.log('Stream loaded');
+    };
+  }
 });
 
 function switchTab(tab) {
@@ -322,7 +288,7 @@ def index():
     except OSError as e:
         current_app.logger.error(f"OSError while accessing {record_root}: {e}")
         st = {'total_gb': 0, 'used_gb': 0, 'free_gb': 0, 'mount': str(record_root)}
-    files = []
+    files = list_media(record_root)
 
     # Lấy video_fps từ config
     video_fps = cfg_get("video.fps", 15)
