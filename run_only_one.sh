@@ -1,6 +1,7 @@
 #!/bin/bash
 sudo apt update
 sudo apt install git
+sudo apt upgrade
 # Biến repo URL
 REPO_URL="https://github.com/nguyenhoangnb/pi3b-.git"
 TARGET_DIR="$HOME/pi3b-"  # Thư mục đích để clone
