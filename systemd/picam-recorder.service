@@ -7,12 +7,11 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=admin
-Group=admin
+User=root
+Group=root
 WorkingDirectory=/home/admin/pi3b-
 Environment=PYTHONUNBUFFERED=1
-# Chạy bằng sudo python (đã được phép NOPASSWD)
-ExecStart=/bin/bash -lc 'sudo /home/admin/pi3b-/.venv/bin/python /home/admin/pi3b-/firmware/domain/recorder.py'
+ExecStart=/home/admin/pi3b-/.venv/bin/python /home/admin/pi3b-/firmware/domain/recorder.py
 Restart=on-failure
 RestartSec=3
 
