@@ -12,7 +12,7 @@ User=admin
 Group=admin
 WorkingDirectory=/home/admin/pi3b-
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/env bash -lc 'source .venv/bin/activate; exec python /home/admin/pi3b-/firmware/domain/recorder.py'
+ExecStart=/usr/bin/env bash -lc 'sudo .venv/bin/python /home/admin/pi3b-/firmware/domain/recorder.py'
 Restart=on-failure
 RestartSec=3
 
