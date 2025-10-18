@@ -316,6 +316,32 @@ class FFmpegRecorder:
             print(f"❌ Failed to start FFmpeg: {e}")
             traceback.print_exc()
             return False
+
+    # ⬇️ ⬇️ ⬇️ PHẦN BỊ THIẾU ĐÃ ĐƯỢC THÊM LẠI VÀO ĐÂY ⬇️ ⬇️ ⬇️
+    def stop_recording(self):
+        """Stop FFmpeg recording"""
+        if not self.is_running():
+            return
+        
+        print("⏱ Stopping FFmpeg...")
+        
+        self._stop_flag = True
+        
+        try:
+            self.ffmpeg_process.terminate()
+            self.ffmpeg_process.wait(timeout=10)
+            print("   ✅ FFmpeg stopped")
+        except subprocess.TimeoutExpired:
+            print("   ⚠️ Timeout, force killing...")
+            self.ffmpeg_process.kill()
+            self.ffmpeg_process.wait()
+        except Exception as e:
+            print(f"   ⚠️ Error stopping FFmpeg: {e}")
+        
+        self.ffmpeg_process = None
+        self.led_control.off()
+        print("   💡 LED off")
+    # ⬆️ ⬆️ ⬆️ KẾT THÚC PHẦN THÊM LẠI ⬆️ ⬆️ ⬆️
     
     def is_running(self):
         """Check if FFmpeg is running"""
