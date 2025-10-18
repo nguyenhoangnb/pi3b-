@@ -13,3 +13,4 @@ moviepy
 requests
 flask-socketio
 websocket-client 
+flask-cors

@@ -17,17 +17,17 @@ webui:
   host: "0.0.0.0"
   port: 8080
 paths:
-  record_root: /media/ssd
-  log_dir: /media/ssd
+  record_root: video
+  log_dir: video
 storage:
   min_free_gb: 1.0
-  segment_seconds: 30
+  segment_seconds: 600
   container: mkv
   filename_pattern: "%Y%m%d-%H%M%S.mkv"
 video:
   v4l2_device: "/dev/video0"
   v4l2_format: "640x480"
-  v4l2_fps: 15
+  v4l2_fps: 30  # Raspberry Pi camera supports 30fps @ 640x480
 audio:
   device: "plughw:1,0"  # USB Audio Device (card 1) - use hw instead of plughw
   sample_rate: 48000

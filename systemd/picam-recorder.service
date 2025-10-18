@@ -1,20 +1,10 @@
-[Unit]
-Description=PiCam Recorder (FFmpeg segments)
-After=network-online.target local-fs.target dev-video0.device
-Wants=network-online.target dev-video0.device
-RequiresMountsFor=/media/ssd /media/ssd/picam
-# systemd cũ không hiểu StartLimitIntervalSec trong [Service], nếu cần giới hạn thì khai báo ở [Unit]
-StartLimitIntervalSec=0
-
 [Service]
 Type=simple
-User=admin
-Group=admin
+User=root
+Group=root
 WorkingDirectory=/home/admin/pi3b-
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/env bash -lc 'source .venv/bin/activate; exec python /home/admin/pi3b-/firmware/domain/recorder.py'
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
+ExecStart=/home/admin/pi3b-/.venv/bin/python /home/admin/pi3b-/firmware/domain/recorder.py
+Restart=always
+RestartSec=5
+TimeoutStartSec=300
