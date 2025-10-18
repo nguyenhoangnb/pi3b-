@@ -17,7 +17,7 @@ _HTML = r"""
   </div>
   <div style="margin:.8rem 0 .3rem"><b>LEDs</b></div>
   <div class="leds">
-    {% for k in ['record','record','wifi','lte','gps','factory'] %}
+    {% for k in ['record','wifi','lte','gps','factory'] %}
       <div class="led {{ 'on' if leds[k]=='on' else ('blink' if leds[k]=='blink' else '') }}"><span class="dot"></span> {{k|capitalize}}</div>
     {% endfor %}
   </div>
@@ -228,8 +228,8 @@ video,img{width:100%;max-height:62vh;background:#000;border-radius:12px}
 // Initialize HLS player for live stream
 document.addEventListener('DOMContentLoaded', function() {
   const video = document.getElementById('videoStream');
-  // Use same-origin proxy route so browser doesn't call port 5000 directly
-  const hlsUrl = '/hls/stream.m3u8';
+  // Use direct file URL for local HLS
+  const hlsUrl = 'file:///tmp/picam_hls/stream.m3u8';
     
     if (Hls.isSupported()) {
         const hls = new Hls({
