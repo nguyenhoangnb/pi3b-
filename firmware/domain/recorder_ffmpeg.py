@@ -210,7 +210,6 @@ class FFmpegRecorder:
         # Định dạng timestamp, lưu ý \\: để escape dấu : cho FFmpeg
         timestamp_format = '%{localtime\\:%Y-%m-%d %H\\:%M\\:%S}'
         
-        ## ◀️ THAY ĐỔI: Cập nhật filter_string để thêm drawtext
         filter_string = (
             f"scale=640:480:flags=bicubic,"
             f"drawtext=fontfile='{font_path}':"
