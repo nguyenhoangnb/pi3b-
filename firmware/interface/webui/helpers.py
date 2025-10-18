@@ -194,8 +194,27 @@ def rec_is_active() -> bool:
 
 def set_recording(active: bool):
     """Start/stop recording using recorder or fallback to flag file"""
-    # Chỉ cập nhật trạng thái nội bộ, không tự động start/stop service
-    _set_recording_fallback(active)
+    recorder = get_recorder()
+    
+    if recorder:
+        # Use the recorder instance
+        try:
+            if active:
+                start_service("picam-recorder")
+                if rec_is_active():
+                    print("✓ Recording started via VideoRecorder")
+                else:
+                    print("⚠ Failed to start recording via VideoRecorder")
+            else:
+                stop_service("picam-recorder")
+                print("✓ Recording stopped via VideoRecorder")
+        except Exception as e:
+            print(f"⚠ Error controlling recorder: {e}")
+            # Fallback to flag file method
+            _set_recording_fallback(active)
+    else:
+        # Fallback to original flag file method
+        _set_recording_fallback(active)
 
 def _set_recording_fallback(active: bool):
     """Fallback recording control using flag file"""
