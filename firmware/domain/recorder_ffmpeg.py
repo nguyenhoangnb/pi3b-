@@ -247,10 +247,18 @@ class FFmpegRecorder:
         ])
         
         # ✅ FIX: Tee output với cấu hình HLS tối ưu
+        # tee_output = (
+        #     f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
+        #     f"segment_start_number=0:"
+        #     f"reset_timestamps=1:segment_list_flags=live]{timestamp_pattern}|"  # <-- ĐÃ SỬA: Xóa strftime=1
+        #     f"[f=hls:hls_time=2:hls_list_size=5:"
+        #     f"hls_flags=delete_segments+independent_segments+append_list:"
+        #     f"hls_segment_type=mpegts:start_number=0:"
+        #     f"hls_allow_cache=0:"
+        #     f"hls_segment_filename={self.hls_dir}/segment_%03d.ts]{self.hls_dir}/stream.m3u8"
+        # )
         tee_output = (
-            f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
-            f"segment_start_number=0:"
-            f"reset_timestamps=1:segment_list_flags=live]{timestamp_pattern}|"  # <-- ĐÃ SỬA: Xóa strftime=1
+            f"[f=mp4:movflags=+faststart]{self.output_dir}/{start_time}_cam0.mp4|"
             f"[f=hls:hls_time=2:hls_list_size=5:"
             f"hls_flags=delete_segments+independent_segments+append_list:"
             f"hls_segment_type=mpegts:start_number=0:"
