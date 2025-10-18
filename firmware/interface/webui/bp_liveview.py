@@ -2,9 +2,7 @@ from __future__ import annotations
 from flask import Blueprint, Response, request, abort, render_template_string
 from functools import wraps
 import re
-import requests
-import json
-
+from pathlib import Path
 # ============================================================
 # CONFIG & SECURITY
 # ============================================================
@@ -22,6 +20,9 @@ def validate_request(f):
     return decorated
 
 bp = Blueprint("liveview", __name__)
+
+# HLS directory (local files)
+HLS_DIR = "/tmp/picam_hls"
 
 # HLS stream URL - use request host to support both localhost and remote access
 
@@ -58,7 +59,7 @@ def live_video():
         <h2>📷 Live Camera Stream (HLS)</h2>
         <p class="status" id="status">● Connecting...</p>
         <video id="videoStream" controls autoplay muted></video>
-        <p class="info">HLS stream from recorder service (proxied via port 8080)</p>
+        <p class="info">HLS stream from local files in /tmp/picam_hls (proxied via this port)</p>
         <script>
             const statusEl = document.getElementById('status');
             const video = document.getElementById('videoStream');
@@ -113,33 +114,28 @@ def live_video():
 
 
 # ============================================================
-# HLS PROXY ROUTES - Forward from port 8080 to recorder port 5000
+# HLS PROXY ROUTES - Serve local files from /tmp/picam_hls
 # ============================================================
 
 
 @bp.get("/hls/<path:filename>")
 @validate_request
 def hls_proxy(filename):
-    """Proxy HLS files from recorder service to avoid opening port 5000 to browsers"""
+    """Serve HLS files from local directory to avoid external dependencies"""
     # Validate filename to prevent path traversal
     if not re.match(r'^[a-zA-Z0-9_\-\.\/]+$', filename) or '..' in filename:
         abort(400, "Invalid filename")
 
-    recorder_url = f"http://127.0.0.1:5000/hls/{filename}"
-    try:
-        # Forward Range header (and optionally other cache-related headers) so recorder can
-        # respond with partial content (HTTP 206). This helps HLS players request fragments by range.
-        forward_headers = {}
-        if 'Range' in request.headers:
-            forward_headers['Range'] = request.headers['Range']
-        if 'If-Modified-Since' in request.headers:
-            forward_headers['If-Modified-Since'] = request.headers['If-Modified-Since']
-        if 'If-None-Match' in request.headers:
-            forward_headers['If-None-Match'] = request.headers['If-None-Match']
-
-        resp = requests.get(recorder_url, headers=forward_headers or None, stream=True, timeout=10)
-    except requests.exceptions.RequestException as e:
-        abort(502, f"Recorder service unavailable: {e}")
+    file_path = Path(HLS_DIR) / filename
+    if not file_path.exists():
+        # Debug: list files in HLS directory
+        files = list(Path(HLS_DIR).iterdir()) if Path(HLS_DIR).exists() else []
+        return {
+            "error": "File not found",
+            "requested": str(file_path),
+            "hls_dir": HLS_DIR,
+            "files_in_dir": [str(f.name) for f in files]
+        }, 404
 
     # Determine content type
     if filename.endswith('.m3u8'):
@@ -147,20 +143,9 @@ def hls_proxy(filename):
     elif filename.endswith('.ts'):
         content_type = 'video/mp2t'
     else:
-        content_type = resp.headers.get('Content-Type', 'application/octet-stream')
+        content_type = 'application/octet-stream'
 
-    def generate():
-        try:
-            for chunk in resp.iter_content(chunk_size=8192):
-                if chunk:
-                    yield chunk
-        finally:
-            try:
-                resp.close()
-            except:
-                pass
-
-    response = Response(generate(), status=resp.status_code, mimetype=content_type)
+    response = Response(open(file_path, 'rb').read(), mimetype=content_type)
     # Add headers to allow browser access and control caching
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
@@ -170,18 +155,8 @@ def hls_proxy(filename):
     else:
         response.headers['Cache-Control'] = 'public, max-age=3600'
 
-    # Forward content-length if provided
-    if 'Content-Length' in resp.headers:
-        response.headers['Content-Length'] = resp.headers['Content-Length']
-
-    # Propagate Accept-Ranges and Content-Range to enable partial requests
-    if 'Accept-Ranges' in resp.headers:
-        response.headers['Accept-Ranges'] = resp.headers['Accept-Ranges']
-    else:
-        response.headers['Accept-Ranges'] = 'bytes'
-
-    if 'Content-Range' in resp.headers:
-        response.headers['Content-Range'] = resp.headers['Content-Range']
+    # Add Accept-Ranges for partial requests
+    response.headers['Accept-Ranges'] = 'bytes'
 
     return response
 
@@ -193,6 +168,3 @@ def hls_proxy_options(filename):
     response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
     response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
     return response
-
-
-

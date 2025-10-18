@@ -17,7 +17,7 @@ _HTML = r"""
   </div>
   <div style="margin:.8rem 0 .3rem"><b>LEDs</b></div>
   <div class="leds">
-    {% for k in ['record','wifi','lte','gps','factory'] %}
+    {% for k in ['record','record','wifi','lte','gps','factory'] %}
       <div class="led {{ 'on' if leds[k]=='on' else ('blink' if leds[k]=='blink' else '') }}"><span class="dot"></span> {{k|capitalize}}</div>
     {% endfor %}
   </div>
@@ -55,7 +55,7 @@ _HTML = r"""
     </div>
     <div id="liveView" class="tab-content active">
       <video id="videoStream" controls autoplay muted style="width:100%; aspect-ratio: 4/3; max-height:70vh; background:#000; border-radius:8px;"></video>
-      <small>HLS stream (~{{video_fps}}fps). Real-time từ recorder service via FFmpeg.</small>
+      <small>HLS stream (~{{video_fps}}fps). Real-time từ local files in /tmp/picam_hls via FFmpeg.</small>
     </div>
     <div id="recordedView" class="tab-content">
       <div id="playerContainer">
@@ -322,7 +322,7 @@ def index():
     except OSError as e:
         current_app.logger.error(f"OSError while accessing {record_root}: {e}")
         st = {'total_gb': 0, 'used_gb': 0, 'free_gb': 0, 'mount': str(record_root)}
-    files = []
+    files = list_media(record_root)
 
     # Lấy video_fps từ config
     video_fps = cfg_get("video.fps", 15)

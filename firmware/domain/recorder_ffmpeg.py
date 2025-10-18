@@ -15,11 +15,10 @@ from datetime import datetime
 from pathlib import Path
 import queue
 import threading
+import traceback
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from flask import Flask, Response, send_from_directory
-from flask_cors import CORS
 from firmware.hal.usb_manager import USBManager
 from firmware.hal.gpio_leds import gpioLed
 from firmware.hal.gnss import GNSSModule
@@ -36,7 +35,7 @@ class FFmpegRecorder:
         self.config = load(self.config_file)
         
         # Paths
-        self.output_dir = Path(__file__).parent.parent/ self.config['paths']['record_root']
+        self.output_dir = Path(__file__).parent.parent / self.config['paths']['record_root']
         self.hls_dir = "/tmp/picam_hls"
         Path(self.hls_dir).mkdir(parents=True, exist_ok=True)
         
@@ -82,17 +81,10 @@ class FFmpegRecorder:
         # Storage monitoring thread
         self._storage_monitor_thread = None
         
-        # Flask app for HLS serving
-        self.app = Flask(__name__)
-        
-        # Enable CORS for all routes (allows WebUI to access HLS from different port)
-        CORS(self.app, resources={r"/*": {"origins": "*"}})
-        
-        self.setup_flask_routes()
+        # No Flask app - HLS files generated locally in /tmp/picam_hls for offline playback
     
     def _storage_monitor_loop(self):
         """Monitor USB storage and update LED accordingly"""
-        import time
         while not self._stop_flag and self.is_running():
             if not self.usb_manager.is_available():
                 # USB disconnected - blink LED
@@ -102,43 +94,6 @@ class FFmpegRecorder:
                 # USB connected and recording - LED should be solid on
                 self.led_control.on()
             time.sleep(2)  # Check every 2 seconds
-    
-    def setup_flask_routes(self):
-        """Setup Flask routes for HLS streaming"""
-        
-        @self.app.route('/')
-        def index():
-            return {
-                "status": "running" if self.is_running() else "stopped",
-                "hls_url": "/hls/stream.m3u8",
-                "hls_dir": self.hls_dir,
-                "ffmpeg_pid": self.ffmpeg_process.pid if self.ffmpeg_process else None
-            }
-        
-        @self.app.route('/hls/<path:filename>')
-        def serve_hls(filename):
-            """Serve HLS playlist and segments"""
-            file_path = Path(self.hls_dir) / filename
-            if not file_path.exists():
-                # Debug: list files in HLS directory
-                files = list(Path(self.hls_dir).iterdir()) if Path(self.hls_dir).exists() else []
-                return {
-                    "error": "File not found",
-                    "requested": str(file_path),
-                    "hls_dir": self.hls_dir,
-                    "files_in_dir": [str(f.name) for f in files]
-                }, 404
-            return send_from_directory(self.hls_dir, filename)
-        
-        @self.app.route('/health')
-        def health():
-            return {
-                "status": "ok",
-                "recording": self.is_running(),
-                "storage_available": self.usb_manager.is_available(),
-                "storage_space_ok": self.usb_manager.has_enough_space(),
-                "ffmpeg_running": self.ffmpeg_process.poll() is None if self.ffmpeg_process else False
-            }
     
     def get_video_device(self):
         """Find available camera"""
@@ -362,7 +317,7 @@ class FFmpegRecorder:
         print(f"🎬 Starting FFmpeg recording...")
         print(f"   ↳ Video: {video_dev} ({video_size} @ {video_fps}fps)")
         print(f"   ↳ Output: {self.output_dir}/*.mp4 (starting from {start_time})")
-        print(f"   ↳ HLS: {self.hls_dir}/stream.m3u8")
+        print(f"   ↳ HLS: {self.hls_dir}/stream.m3u8 (local files only)")
         print(f"   ↳ Segment: {self.segment_seconds}s")
         
         try:
@@ -435,6 +390,7 @@ class FFmpegRecorder:
             print(f"❌ Failed to start FFmpeg: {e}")
             traceback.print_exc()
             return False
+
     def stop_recording(self):
         """Stop FFmpeg recording"""
         if not self.is_running():
@@ -488,7 +444,7 @@ class FFmpegRecorder:
         #     except:
         #         pass
         
-        # print("✅ Cleanup complete")
+        print("✅ Cleanup complete")
 
 
 # Global recorder instance
@@ -511,10 +467,13 @@ if __name__ == "__main__":
         
         # Start recording
         if recorder.start_recording():
-            print("📡 HLS stream: http://localhost:5000/hls/stream.m3u8")
+            print(f"📡 HLS files generated in: {recorder.hls_dir}")
+            print("   ↳ Play locally with: ffplay stream.m3u8")
+            print("   ↳ Or VLC: File > Open Network Stream > file:///tmp/picam_hls/stream.m3u8")
             
-            # Run Flask app
-            recorder.app.run(host="0.0.0.0", port=5000, debug=False)
+            # Run indefinitely until signal (no Flask server - local HLS only)
+            while recorder.is_running():
+                time.sleep(1)
         else:
             print("❌ Failed to start recording")
             sys.exit(1)
@@ -525,6 +484,5 @@ if __name__ == "__main__":
             recorder.cleanup()
     except Exception as e:
         print(f"❌ Error: {e}")
-        import traceback
         traceback.print_exc()
         sys.exit(1)
