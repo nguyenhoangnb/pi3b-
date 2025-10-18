@@ -1,11 +1,19 @@
 from __future__ import annotations
-from flask import current_app, request
-from flask import Blueprint, render_template_string
+from flask import Blueprint, current_app, render_template_string, send_from_directory, abort, request
 from pathlib import Path
 from .helpers import cfg_get, leds_status, iface_is_up, rec_is_active, disk_info, list_media, time_info, hw_inventory
+import re
 
 bp = Blueprint("dashboard", __name__)
 
+# -----------------------------------------------------------
+# HLS PATH CONFIG
+# -----------------------------------------------------------
+HLS_DIR = Path("/tmp/picam_hls")
+
+# -----------------------------------------------------------
+# HTML BODY (dashboard)
+# -----------------------------------------------------------
 _HTML = r"""
 <div class="card">
   <h1>PiCam WebUI</h1>
@@ -15,20 +23,30 @@ _HTML = r"""
     <div><b>HW Rev</b></div><div>{{dev.get('hw_rev','')}}</div>
     <div><b>FW Version</b></div><div>{{dev.get('fw_version','')}}</div>
   </div>
+
   <div style="margin:.8rem 0 .3rem"><b>LEDs</b></div>
   <div class="leds">
     {% for k in ['record','wifi','lte','gps','factory'] %}
-      <div class="led {{ 'on' if leds[k]=='on' else ('blink' if leds[k]=='blink' else '') }}"><span class="dot"></span> {{k|capitalize}}</div>
+      <div class="led {{ 'on' if leds[k]=='on' else ('blink' if leds[k]=='blink' else '') }}">
+        <span class="dot"></span> {{k|capitalize}}
+      </div>
     {% endfor %}
   </div>
+
   <div class="row" style="margin-top:.8rem">
     <form method="post" action="/action/record" class="row">
-      {% if recording %}<button name="cmd" value="stop" class="danger">⏹ Stop Recording</button>
-      {% else %}<button name="cmd" value="start">⏺ Start Recording</button>{% endif %}
+      {% if recording %}
+        <button name="cmd" value="stop" class="danger">⏹ Stop Recording</button>
+      {% else %}
+        <button name="cmd" value="start">⏺ Start Recording</button>
+      {% endif %}
     </form>
     <form method="post" action="/action/wifi" class="row">
-      {% if wifi_up %}<button name="cmd" value="off" class="danger">Wi-Fi OFF</button>
-      {% else %}<button name="cmd" value="on">Wi-Fi ON</button>{% endif %}
+      {% if wifi_up %}
+        <button name="cmd" value="off" class="danger">Wi-Fi OFF</button>
+      {% else %}
+        <button name="cmd" value="on">Wi-Fi ON</button>
+      {% endif %}
     </form>
   </div>
 </div>
@@ -53,10 +71,14 @@ _HTML = r"""
       <button onclick="switchTab('live')" class="tab-btn active" id="liveBtn">Live Stream</button>
       <button onclick="switchTab('recorded')" class="tab-btn" id="recordedBtn">Recorded Videos</button>
     </div>
+
     <div id="liveView" class="tab-content active">
-      <video id="videoStream" controls autoplay muted style="width:100%; aspect-ratio: 4/3; max-height:70vh; background:#000; border-radius:8px;"></video>
-      <small>HLS stream (~{{video_fps}}fps). Real-time từ local files in /tmp/picam_hls via FFmpeg.</small>
+      <video id="videoStream" controls autoplay muted
+        style="width:100%; aspect-ratio: 4/3; max-height:70vh; background:#000; border-radius:8px;">
+      </video>
+      <small>HLS stream (~{{video_fps}}fps). Real-time từ Flask route <code>/hls/stream.m3u8</code>.</small>
     </div>
+
     <div id="recordedView" class="tab-content">
       <div id="playerContainer">
         <video id="videoPlayer" controls style="width:100%; height:480px; background:#000;">
@@ -77,7 +99,7 @@ _HTML = r"""
         {% endfor %}
       </div>
       {% else %}
-      <p class="muted">Không có video nào.</p>
+        <p class="muted">Không có video nào.</p>
       {% endif %}
     </div>
   </div>
@@ -134,218 +156,106 @@ _HTML = r"""
       {% endfor %}
     </tbody>
   </table>
-  {% else %}<p class="muted">Chưa có file nào.</p>{% endif %}
+  {% else %}
+    <p class="muted">Chưa có file nào.</p>
+  {% endif %}
 </div>
 """
 
-# trang tổng hợp (inline CSS)
+# -----------------------------------------------------------
+# FRAME + SCRIPT
+# -----------------------------------------------------------
 _FRAME = r"""
-<!doctype html><html><head>
+<!doctype html>
+<html><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PiCam WebUI</title>
 <style>
-:root{--bg:#fff;--fg:#111;--muted:#666;--card:#fafafa;--bd:#e5e7eb;--ok:#16a34a;--warn:#f59e0b;--err:#dc2626;--off:#9ca3af}
-*{box-sizing:border-box}body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:20px;color:var(--fg);background:var(--bg)}
-.wrap{max-width:980px;margin:auto}.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 1px 8px rgba(0,0,0,.04)}
-h1{margin:.2rem 0 1rem;font-size:1.6rem}h2{margin:.4rem 0 .8rem;font-size:1.1rem}
-.kv{display:grid;grid-template-columns:160px 1fr;gap:.4rem 1rem}
-.leds{display:flex;gap:10px;flex-wrap:wrap}.led{display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:9999px;border:1px solid var(--bd);background:#fff}
-.dot{width:10px;height:10px;border-radius:9999px;background:var(--off)}.on .dot{background:var(--ok)}.blink .dot{animation:bl 1s linear infinite;background:var(--warn)}
-@keyframes bl{0%{opacity:1}50%{opacity:.15}100%{opacity:1}}.muted{color:var(--muted)}
-.row{display:flex;gap:10px;flex-wrap:wrap}button{border:1px solid var(--bd);background:#fff;padding:8px 12px;border-radius:10px;cursor:pointer}button:hover{background:#f3f4f6}
-table{width:100%;border-collapse:collapse}th,td{padding:8px;border-bottom:1px solid var(--bd);text-align:left}.right{text-align:right}
-.danger{color:#fff;background:var(--err);border-color:var(--err)}.danger:hover{filter:brightness(.95)}.small{font-size:.9rem}code{background:#f6f8fa;padding:2px 6px;border-radius:6px}
-video,img{width:100%;max-height:62vh;background:#000;border-radius:12px}
-.links{display:flex;gap:1rem;flex-wrap:wrap;margin-top:.5rem}.links a{color:var(--muted);text-decoration:none}.links a:hover{text-decoration:underline}
-
-/* Tab styles */
-.tab-container { width: 100%; }
-.tab-buttons { margin-bottom: 1rem; }
-.tab-btn { 
-    padding: 8px 16px;
-    margin-right: 8px;
-    border: 1px solid var(--bd);
-    border-radius: 8px;
-    background: #fff;
-    cursor: pointer;
-}
-.tab-btn.active {
-    background: #0066cc;
-    color: white;
-    border-color: #0066cc;
-}
-.tab-content {
-    display: none;
-    margin-top: 1rem;
-}
-.tab-content.active {
-    display: block;
-}
-
-/* Video list styles */
-.video-list {
-    margin-top: 1rem;
-    max-height: 300px;
-    overflow-y: auto;
-    border: 1px solid var(--bd);
-    border-radius: 8px;
-    background: #fff;
-}
-.video-item {
-    padding: 12px;
-    border-bottom: 1px solid var(--bd);
-    cursor: pointer;
-}
-.video-item:last-child {
-    border-bottom: none;
-}
-.video-item:hover {
-    background: #f5f5f5;
-}
-.video-info {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-.video-name {
-    font-weight: 500;
-}
-.video-size {
-    color: var(--muted);
-    font-size: 0.9rem;
-}
-
-@media (max-width: 768px) {
-    .kv{grid-template-columns:1fr}
-    .row{flex-direction:column}
-    .leds{justify-content:center}
-    .video-info { flex-direction: column; align-items: flex-start; }
-    .video-size { margin-top: 4px; }
-}
+{{style|safe}}
 </style>
 <script src="/static/hls.min.js"></script>
 <script>
-// Initialize HLS player for live stream
 document.addEventListener('DOMContentLoaded', function() {
   const video = document.getElementById('videoStream');
-  // Use direct file URL for local HLS
-  const hlsUrl = '/tmp/picam_hls/stream.m3u8';
-    
-    if (Hls.isSupported()) {
-        const hls = new Hls({
-            maxBufferLength: 4,
-            maxMaxBufferLength: 10,
-            lowLatencyMode: true
-        });
-        hls.loadSource(hlsUrl);
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, function() {
-            console.log('✅ HLS manifest loaded');
-            video.play().catch(e => console.log('Autoplay prevented:', e));
-        });
-        hls.on(Hls.Events.ERROR, function(event, data) {
-            console.error('HLS Error:', data);
-            if (data.fatal) {
-                switch(data.type) {
-                    case Hls.ErrorTypes.NETWORK_ERROR:
-                        console.log('Network error, trying to recover...');
-                        hls.startLoad();
-                        break;
-                    case Hls.ErrorTypes.MEDIA_ERROR:
-                        console.log('Media error, trying to recover...');
-                        hls.recoverMediaError();
-                        break;
-                    default:
-                        console.log('Fatal error, destroying HLS...');
-                        hls.destroy();
-                        break;
-                }
-            }
-        });
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Native HLS support (Safari, iOS)
-        video.src = hlsUrl;
-        video.addEventListener('loadedmetadata', function() {
-            console.log('✅ Native HLS loaded');
-            video.play().catch(e => console.log('Autoplay prevented:', e));
-        });
-    }
+  const hlsUrl = '/hls/stream.m3u8';
+
+  if (Hls.isSupported()) {
+      const hls = new Hls({ maxBufferLength: 4, maxMaxBufferLength: 10, lowLatencyMode: true });
+      hls.loadSource(hlsUrl);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(e => console.log('Autoplay blocked')));
+      hls.on(Hls.Events.ERROR, (ev, data) => console.warn('HLS error', data));
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = hlsUrl;
+      video.addEventListener('loadedmetadata', () => video.play());
+  }
 });
 
 function switchTab(tab) {
-    // Update buttons
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    document.getElementById(tab + 'Btn').classList.add('active');
-    
-    // Update content
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
-    document.getElementById(tab + 'View').classList.add('active');
-    
-    // Pause video if switching away from recorded tab
-    if (tab === 'live') {
-        const video = document.getElementById('videoPlayer');
-        if (video) {
-            video.pause();
-        }
-    }
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+  document.getElementById(tab + 'Btn').classList.add('active');
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById(tab + 'View').classList.add('active');
+  if (tab === 'live') { const vp = document.getElementById('videoPlayer'); if (vp) vp.pause(); }
 }
-
-function playVideo(url) {
-    const video = document.getElementById('videoPlayer');
-    video.src = url;
-    video.play();
-}
+function playVideo(url) { const vp = document.getElementById('videoPlayer'); vp.src = url; vp.play(); }
 </script>
-</head><body><div class="wrap">{{body|safe}}</div></body></html>
+</head>
+<body><div class="wrap">{{body|safe}}</div></body>
+</html>
 """
 
+# -----------------------------------------------------------
+# MAIN PAGE
+# -----------------------------------------------------------
 @bp.get("/")
 def index():
     cfg = current_app.config["PICAM_CFG"]
     dev = (cfg.get("device") or {})
-    
-    record_root_str = ((cfg.get("paths") or {}).get("record_root") or "/media/ssd/picam")
-    record_root = Path(record_root_str)
-    
-    # Error handling cho disk_info nếu path không tồn tại
-    st = {}
-    try:
-        if record_root.exists():
-            st = disk_info(record_root)
-        else:
-            current_app.logger.warning(f"Record root path not found: {record_root}")
-            st = {'total_gb': 0, 'used_gb': 0, 'free_gb': 0, 'mount': str(record_root)}
-    except OSError as e:
-        current_app.logger.error(f"OSError while accessing {record_root}: {e}")
-        st = {'total_gb': 0, 'used_gb': 0, 'free_gb': 0, 'mount': str(record_root)}
-    files = list_media(record_root)
 
-    # Lấy video_fps từ config
+    record_root = Path(((cfg.get("paths") or {}).get("record_root") or "/media/ssd/picam"))
+    try:
+        st = disk_info(record_root) if record_root.exists() else {'total_gb':0,'used_gb':0,'free_gb':0,'mount':str(record_root)}
+    except OSError as e:
+        current_app.logger.error(f"disk_info error: {e}")
+        st = {'total_gb':0,'used_gb':0,'free_gb':0,'mount':str(record_root)}
+
+    files = list_media(record_root)
+    storage_info = { 'path': str(record_root),
+                     'min_free_gb': float(cfg_get("storage.min_free_gb",10)),
+                     **st }
+
     video_fps = cfg_get("video.fps", 15)
-    
-    # Tạo storage dict, đảm bảo không trùng key
-    storage_info = {
-        'path': str(record_root),
-        'min_free_gb': float(cfg_get("storage.min_free_gb", 10)),
-        **st  # Merge disk_info (đã có mount, total_gb, used_gb, free_gb)
-    }
-    # Đảm bảo có mount key
-    if 'mount' not in storage_info:
-        storage_info['mount'] = record_root.anchor or "/"
-    
+
     body = render_template_string(_HTML,
-        dev=dev, 
-        leds=leds_status(), 
-        recording=rec_is_active(), 
+        dev=dev, leds=leds_status(), recording=rec_is_active(),
         wifi_up=iface_is_up(cfg_get("wifi.iface","wlan0")),
-        video_fps=video_fps,
-        storage=storage_info,
-        files=files,
-        clock=time_info(),
-        hw=hw_inventory()
+        video_fps=video_fps, storage=storage_info,
+        files=files, clock=time_info(), hw=hw_inventory()
     )
-    return render_template_string(_FRAME, body=body)
+
+    # nhúng style trực tiếp (để gọn)
+    with open(Path(__file__).parent / "static" / "dashboard_style.css", "r") as f:
+        style = f.read() if f else ""
+
+    return render_template_string(_FRAME, body=body, style=style)
+
+
+# -----------------------------------------------------------
+# ROUTE PHỤC VỤ FILE HLS
+# -----------------------------------------------------------
+@bp.route("/hls/<path:filename>")
+def serve_hls(filename):
+    """Phục vụ file HLS (.m3u8, .ts)"""
+    if re.search(r"(\.\.|%2e%2e|%00)", filename):
+        abort(400)
+    file_path = HLS_DIR / filename
+    if not file_path.exists():
+        abort(404)
+    if filename.endswith(".m3u8"):
+        mime = "application/vnd.apple.mpegurl"
+    elif filename.endswith(".ts"):
+        mime = "video/mp2t"
+    else:
+        mime = "application/octet-stream"
+    return send_from_directory(HLS_DIR, filename, mimetype=mime)
