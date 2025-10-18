@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 recorder_ffmpeg.py - Simple recorder using FFmpeg for both file recording and HLS streaming
-- Single FFmpeg process for recording MP4 files + HLS stream
-- No OpenCV, no PyAudio, no threading complexity
-- Clean and stable
+FIXED VERSION - Sửa lỗi HLS streaming
 """
 import os
 import sys
@@ -45,27 +43,6 @@ class FFmpegRecorder:
         # Hardware
         self.led_control = gpioLed(self.config['gpio'].get('record_led', 26))
         
-        # RTC
-        # try:
-        #     self.rtc = rtcModule()
-        #     self.rtc_available = True
-        #     print("✅ RTC initialized")
-        # except Exception as e:
-        #     print(f"⚠️ RTC not available: {e}")
-        #     self.rtc_available = False
-        
-        # # GNSS
-        # try:
-        #     if self.config['capabilities'].get('gnss', False):
-        #         self.gnss = GNSSModule()
-        #         self.gnss_available = True
-        #         print("✅ GNSS initialized")
-        #     else:
-        #         self.gnss_available = False
-        # except Exception as e:
-        #     print(f"⚠️ GNSS not available: {e}")
-        #     self.gnss_available = False
-        
         # USB Storage Manager
         self.usb_manager = USBManager(
             path=self.output_dir,
@@ -80,20 +57,16 @@ class FFmpegRecorder:
         
         # Storage monitoring thread
         self._storage_monitor_thread = None
-        
-        # No Flask app - HLS files generated locally in /tmp/picam_hls for offline playback
     
     def _storage_monitor_loop(self):
         """Monitor USB storage and update LED accordingly"""
         while not self._stop_flag and self.is_running():
             if not self.usb_manager.is_available():
-                # USB disconnected - blink LED
                 self.led_control.blink(0.3)
                 print("⚠️ USB storage disconnected!")
             else:
-                # USB connected and recording - LED should be solid on
                 self.led_control.on()
-            time.sleep(2)  # Check every 2 seconds
+            time.sleep(2)
     
     def get_video_device(self):
         """Find available camera"""
@@ -101,7 +74,6 @@ class FFmpegRecorder:
         if Path(video_dev).exists():
             return video_dev
         
-        # Try to find any available video device
         for i in range(10):
             dev = f'/dev/video{i}'
             if Path(dev).exists():
@@ -116,15 +88,13 @@ class FFmpegRecorder:
             print("ℹ️ Audio disabled in config")
             return None
         
-        # NEW: Test devices (prefer hw for raw access)
         test_devices = [
-            "hw:1,0",      # HD camera direct (priority)
-            "plughw:1,0",  # HD camera plugin
-            "hw:2,0",      # USB Audio direct
-            "plughw:2,0",  # USB Audio plugin
+            "hw:1,0",
+            "plughw:1,0",
+            "hw:2,0",
+            "plughw:2,0",
         ]
         
-        # NEW: Common param combos to test (USB mics often 44.1kHz stereo)
         test_params = [
             {'rate': 44100, 'channels': 2},
             {'rate': 48000, 'channels': 2},
@@ -141,35 +111,23 @@ class FFmpegRecorder:
                     '-f', 'S16_LE',
                     '-r', str(params['rate']),
                     '-c', str(params['channels']),
-                    '-d', '1',  # 1 second test
+                    '-d', '1',
                     '/tmp/audio_test.wav'
                 ]
                 try:
-                    result = subprocess.run(
-                        test_cmd,
-                        capture_output=True,
-                        timeout=3  # Slightly longer for USB init
-                    )
+                    result = subprocess.run(test_cmd, capture_output=True, timeout=3)
                     if result.returncode == 0:
                         print(f"✅ Audio device verified: {alsa_device} ({params['channels']}ch @ {params['rate']}Hz)")
-                        # Clean up
                         try:
                             Path('/tmp/audio_test.wav').unlink()
                         except:
                             pass
-                        # NEW: Return dict for FFmpeg
                         return {
                             'device': alsa_device,
                             'rate': params['rate'],
                             'channels': params['channels']
                         }
-                    else:
-                        stderr = result.stderr.decode('utf-8', errors='ignore')
-                        if 'No such device' not in stderr and 'cannot find card' not in stderr and len(stderr) > 0:
-                            print(f"⚠️ {alsa_device} ({params['rate']}Hz/{params['channels']}ch): {stderr.split('\n')[0][:60]}")
-                except subprocess.TimeoutExpired:
-                    print(f"⏱️ {alsa_device} ({params['rate']}Hz/{params['channels']}ch): Timeout")
-                except Exception:
+                except:
                     pass
         print("⚠️ No working audio device found—falling back to video-only")
         return None
@@ -206,19 +164,15 @@ class FFmpegRecorder:
             except:
                 pass
         
-        # Get devices - UPDATED: Audio now returns dict or None
+        # Get devices
         try:
             video_dev = self.get_video_device()
-            # audio_info = self.get_audio_device()
         except Exception as e:
             print(f"❌ Device error: {e}")
             return False
         
-        # NEW: Quick device lock check/kill
-        devs_to_check = [video_dev]
-        # if audio_info:
-        #     devs_to_check.append(audio_info['device'])
-        for dev in devs_to_check:
+        # Quick device lock check/kill
+        for dev in [video_dev]:
             try:
                 if subprocess.run(['fuser', dev], capture_output=True).returncode == 0:
                     print(f"⚠️ Device {dev} in use—killing processes")
@@ -227,7 +181,7 @@ class FFmpegRecorder:
                 pass
         
         # Parse video settings
-        video_size = self.config['video']['v4l2_format']  # "640x480"
+        video_size = self.config['video']['v4l2_format']
         video_fps = self.config['video']['v4l2_fps']
         
         # Build FFmpeg command
@@ -238,24 +192,9 @@ class FFmpegRecorder:
             '-video_size', video_size,
             '-framerate', str(video_fps),
             '-i', video_dev,
-            # NEW: Low-latency for USB video
             '-fflags', 'nobuffer',
             '-flags', 'low_delay',
         ]
-        
-        # Add audio input if available
-        # if audio_info:
-        #     cmd.extend([
-        #         '-f', 'alsa',
-        #         '-channels', str(audio_info['channels']),
-        #         '-sample_rate', str(audio_info['rate']),
-        #         '-i', audio_info['device'],
-        #         # NEW: Thread queue for Pi limits
-        #         '-thread_queue_size', '512',
-        #     ])
-        #     print(f"   ↳ Audio: {audio_info['device']} ({audio_info['channels']}ch @ {audio_info['rate']}Hz)")
-        # else:
-        #     print(f"   ↳ Audio: Disabled (video only)")
         
         # Build video filter
         filter_string = 'scale=640:480:flags=bicubic,format=yuv420p'
@@ -264,51 +203,37 @@ class FFmpegRecorder:
         cmd.extend([
             '-vf', filter_string,
             '-c:v', 'libx264',
-            '-preset', 'veryfast',
+            '-preset', 'ultrafast',  # Thay đổi từ veryfast → ultrafast cho streaming
             '-tune', 'zerolatency',
-            '-profile:v', 'main',
-            '-level', '3.1',
-            '-x264-params', 'nal-hrd=cbr',
+            '-profile:v', 'baseline',  # Thay đổi từ main → baseline (tương thích tốt hơn)
+            '-level', '3.0',
             '-g', str(video_fps * 2),
-            '-keyint_min', str(video_fps * 2),
+            '-keyint_min', str(video_fps),
             '-sc_threshold', '0',
-            '-b:v', '1200k',
-            '-maxrate', '1500k',
-            '-bufsize', '3000k',
-            '-force_key_frames', f'expr:gte(t,n_forced*{2})',
+            '-b:v', '800k',  # Giảm bitrate cho streaming mượt hơn
+            '-maxrate', '1000k',
+            '-bufsize', '2000k',
             '-pix_fmt', 'yuv420p',
         ])
         
-        # Audio codec if available
-        # if audio_info:
-        #     cmd.extend([
-        #         '-c:a', 'aac',
-        #         '-b:a', '128k',
-        #         # NEW: A/V sync
-        #         '-async', '1',
-        #     ])
-        
         # Tee muxer setup
-        # NEW: Get current system time for segment naming
-        from datetime import datetime
         start_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         timestamp_pattern = f"{self.output_dir}/{start_time}_cam0_%03d.mp4"
         
         cmd.extend([
             '-f', 'tee',
-            '-map', '0:v',  # Video map
+            '-map', '0:v',
         ])
         
-        # if audio_info:
-        #     cmd.extend(['-map', '1:a'])  # Audio map
-        
-        # Tee output - UPDATED: Use segment format with strftime and index for time-based segments
+        # ✅ FIX: Tee output với cấu hình HLS tối ưu
         tee_output = (
             f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
+            f"segment_start_number=0:"  # ← FIX 1: Thêm start number
             f"reset_timestamps=1:strftime=1:segment_list_flags=live]{timestamp_pattern}|"
-            f"[f=hls:hls_time=2:hls_list_size=10:"
-            f"hls_flags=delete_segments+independent_segments:"
+            f"[f=hls:hls_time=2:hls_list_size=5:"  # ← FIX 2: Giảm list size
+            f"hls_flags=delete_segments+independent_segments+append_list:"  # ← FIX 3: Thêm append_list
             f"hls_segment_type=mpegts:start_number=0:"
+            f"hls_allow_cache=0:"  # ← FIX 4: Disable cache cho live stream
             f"hls_segment_filename={self.hls_dir}/segment_%03d.ts]{self.hls_dir}/stream.m3u8"
         )
         
@@ -316,13 +241,14 @@ class FFmpegRecorder:
         
         print(f"🎬 Starting FFmpeg recording...")
         print(f"   ↳ Video: {video_dev} ({video_size} @ {video_fps}fps)")
-        print(f"   ↳ Output: {self.output_dir}/*.mp4 (starting from {start_time})")
-        print(f"   ↳ HLS: {self.hls_dir}/stream.m3u8 (local files only)")
+        print(f"   ↳ Output: {self.output_dir}/*.mp4")
+        print(f"   ↳ HLS: {self.hls_dir}/stream.m3u8")
         print(f"   ↳ Segment: {self.segment_seconds}s")
         
         try:
-            # Log command
-            print(f"   ↳ Command: {' '.join(cmd)}")
+            # Log command for debugging
+            cmd_str = ' '.join(cmd)
+            print(f"   ↳ Command: {cmd_str[:200]}...")
             
             self.ffmpeg_process = subprocess.Popen(
                 cmd,
@@ -335,14 +261,17 @@ class FFmpegRecorder:
             
             print(f"✅ FFmpeg started (PID: {self.ffmpeg_process.pid})")
             
-            # ENHANCED: Monitoring with queue for non-blocking
+            # Enhanced monitoring with queue
             output_queue = queue.Queue()
             def monitor_ffmpeg():
                 try:
                     for line in iter(self.ffmpeg_process.stdout.readline, ''):
                         output_queue.put(line)
                         lower_line = line.lower()
-                        if any(word in lower_line for word in ['error', 'failed', 'no such device', 'invalid argument', 'ioctl', 'demuxing']):
+                        # ✅ FIX 5: Log HLS-specific errors
+                        if any(word in lower_line for word in ['error', 'failed', 'no such device', 
+                                                                 'invalid argument', 'ioctl', 
+                                                                 'demuxing', 'hls', 'segment']):
                             print(f"⚠️ FFmpeg: {line.strip()}")
                 except:
                     pass
@@ -350,12 +279,12 @@ class FFmpegRecorder:
             monitor_thread = threading.Thread(target=monitor_ffmpeg, daemon=True)
             monitor_thread.start()
             
-            # Drain non-errors (silent by default)
+            # Drain output
             def drain_output():
                 while self.is_running():
                     try:
                         line = output_queue.get(timeout=1)
-                        # Uncomment for verbose: print(line.strip())
+                        # Uncomment để xem full log: print(line.strip())
                     except queue.Empty:
                         continue
             
@@ -366,22 +295,19 @@ class FFmpegRecorder:
             self._storage_monitor_thread = threading.Thread(target=self._storage_monitor_loop, daemon=True)
             self._storage_monitor_thread.start()
             
-            # ENHANCED: Retry on early exit
-            max_retries = 3
-            for attempt in range(max_retries):
-                time.sleep(2)  # USB init time
-                if self.ffmpeg_process.poll() is None:
-                    break
-                print(f"⚠️ FFmpeg exited early (attempt {attempt+1}/{max_retries}): code {self.ffmpeg_process.returncode}")
-                if attempt < max_retries - 1:
-                    print("🔄 Retrying...")
-                    self.ffmpeg_process = subprocess.Popen(
-                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                        stdin=subprocess.DEVNULL, universal_newlines=True, bufsize=1
-                    )
-                    print(f"✅ Retry FFmpeg started (PID: {self.ffmpeg_process.pid})")
-                else:
-                    return False
+            # Wait for FFmpeg to start
+            time.sleep(3)  # Tăng từ 2→3s cho USB init
+            
+            if self.ffmpeg_process.poll() is not None:
+                print(f"❌ FFmpeg exited early: code {self.ffmpeg_process.returncode}")
+                return False
+            
+            # ✅ FIX 6: Verify HLS files created
+            time.sleep(2)
+            if not Path(f"{self.hls_dir}/stream.m3u8").exists():
+                print(f"⚠️ Warning: stream.m3u8 not created yet")
+            else:
+                print(f"✅ HLS playlist created successfully")
             
             self.led_control.on()
             return True
@@ -398,11 +324,9 @@ class FFmpegRecorder:
         
         print("⏱ Stopping FFmpeg...")
         
-        # Signal storage monitor to stop
         self._stop_flag = True
         
         try:
-            # Send 'q' to FFmpeg stdin for graceful shutdown
             self.ffmpeg_process.terminate()
             self.ffmpeg_process.wait(timeout=10)
             print("   ✅ FFmpeg stopped")
@@ -414,8 +338,6 @@ class FFmpegRecorder:
             print(f"   ⚠️ Error stopping FFmpeg: {e}")
         
         self.ffmpeg_process = None
-        
-        # Turn off LED when recording stops
         self.led_control.off()
         print("   💡 LED off")
     
@@ -427,23 +349,7 @@ class FFmpegRecorder:
     def cleanup(self):
         """Cleanup resources"""
         print("🧹 Cleanup...")
-        
         self.stop_recording()
-        
-        # if hasattr(self, 'gnss') and self.gnss_available:
-        #     try:
-        #         self.gnss.close()
-        #         print("📡 GNSS closed")
-        #     except:
-        #         pass
-        
-        # if hasattr(self, 'rtc') and self.rtc_available:
-        #     try:
-        #         self.rtc.close()
-        #         print("⏰ RTC closed")
-        #     except:
-        #         pass
-        
         print("✅ Cleanup complete")
 
 
@@ -465,13 +371,11 @@ if __name__ == "__main__":
     try:
         recorder = FFmpegRecorder()
         
-        # Start recording
         if recorder.start_recording():
-            print(f"📡 HLS files generated in: {recorder.hls_dir}")
-            print("   ↳ Play locally with: ffplay stream.m3u8")
-            print("   ↳ Or VLC: File > Open Network Stream > file:///tmp/picam_hls/stream.m3u8")
+            print(f"📡 HLS stream available at: {recorder.hls_dir}/stream.m3u8")
+            print("   ↳ Test with: ffplay /tmp/picam_hls/stream.m3u8")
+            print("   ↳ Or web browser: http://your-pi-ip/live")
             
-            # Run indefinitely until signal (no Flask server - local HLS only)
             while recorder.is_running():
                 time.sleep(1)
         else:

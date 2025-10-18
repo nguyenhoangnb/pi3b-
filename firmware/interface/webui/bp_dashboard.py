@@ -242,18 +242,18 @@ def index():
 # -----------------------------------------------------------
 # ROUTE PHỤC VỤ FILE HLS
 # -----------------------------------------------------------
-@bp.route("/hls/<path:filename>")
-def serve_hls(filename):
-    """Phục vụ file HLS (.m3u8, .ts)"""
-    if re.search(r"(\.\.|%2e%2e|%00)", filename):
-        abort(400)
-    file_path = HLS_DIR / filename
-    if not file_path.exists():
-        abort(404)
-    if filename.endswith(".m3u8"):
-        mime = "application/vnd.apple.mpegurl"
-    elif filename.endswith(".ts"):
-        mime = "video/mp2t"
-    else:
-        mime = "application/octet-stream"
-    return send_from_directory(HLS_DIR, filename, mimetype=mime)
+# @bp.route("/hls/<path:filename>")
+# def serve_hls(filename):
+#     """Phục vụ file HLS (.m3u8, .ts)"""
+#     if re.search(r"(\.\.|%2e%2e|%00)", filename):
+#         abort(400)
+#     file_path = HLS_DIR / filename
+#     if not file_path.exists():
+#         abort(404)
+#     if filename.endswith(".m3u8"):
+#         mime = "application/vnd.apple.mpegurl"
+#     elif filename.endswith(".ts"):
+#         mime = "video/mp2t"
+#     else:
+#         mime = "application/octet-stream"
+#     return send_from_directory(HLS_DIR, filename, mimetype=mime)
