@@ -213,7 +213,7 @@ class FFmpegRecorder:
         filter_string = (
             f"scale=640:480:flags=bicubic,"
             f"drawtext=fontfile='{font_path}':"
-            f"text='%{{localtime\\:%Y-%m-%d %H\\\\:%M\\\\:%S}}':"
+            f"text='%{{localtime\\:%Y-%m-%d %H\\\\\\:%M\\\\\\:%S}}':"
             f"fontcolor=white:fontsize=20:box=1:boxcolor=black@0.5:"
             f"boxborderw=5:x=(w-text_w-10):y=10,"
             f"format=yuv420p"
