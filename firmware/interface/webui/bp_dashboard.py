@@ -234,11 +234,9 @@ def index():
         files=files, clock=time_info(), hw=hw_inventory()
     )
 
-    # nhúng style trực tiếp (để gọn)
-    with open(Path(__file__).parent / "static" / "dashboard_style.css", "r") as f:
-        style = f.read() if f else ""
 
-    return render_template_string(_FRAME, body=body, style=style)
+
+    return render_template_string(_FRAME, body=body)
 
 
 # -----------------------------------------------------------
