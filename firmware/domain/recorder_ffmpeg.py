@@ -3,7 +3,6 @@
 recorder_ffmpeg.py - Simple recorder using FFmpeg for both file recording and HLS streaming
 FIXED VERSION - Sửa lỗi HLS streaming
 UPDATED VERSION - Thêm overlay timestamp và tự động khởi động lại
-FINAL FIX - Sửa lỗi cú pháp filter (timestamp) và lỗi file hỏng (movflags)
 """
 import os
 import sys
@@ -211,31 +210,28 @@ class FFmpegRecorder:
         # Định dạng timestamp, lưu ý \\: để escape dấu : cho FFmpeg
         timestamp_format = '%{localtime\\:%Y-%m-%d %H\\:%M\\:%S}'
         
-        ## ◀️ ◀️ ◀️ BẮT ĐẦU SỬA LỖI ◀️ ◀️ ◀️
         filter_string = (
             f"scale=640:480:flags=bicubic,"
-            # FIX 1: Xóa dấu nháy đơn '' xung quanh {font_path}
-            f"drawtext=fontfile={font_path}:"
-            # FIX 2: Xóa dấu nháy đơn '' và sửa cú pháp escape cho text=
-            f"text=%{{localtime:%Y-%m-%d %H\\:%M\\:%S}}:"
+            f"drawtext=fontfile='{font_path}':"
+            f"text='%{{localtime\\:%Y-%m-%d %H\\\\\\:%M\\\\\\:%S}}':"
             f"fontcolor=white:fontsize=20:box=1:boxcolor=black@0.5:"
             f"boxborderw=5:x=(w-text_w-10):y=10,"
             f"format=yuv420p"
         )
-        ## ◀️ ◀️ ◀️ KẾT THÚC SỬA LỖI ◀️ ◀️ ◀️
+        ## ◀️ KẾT THÚC THAY ĐỔI
         
         # Video codec settings
         cmd.extend([
             '-vf', filter_string,
             '-c:v', 'libx264',
-            '-preset', 'ultrafast',
+            '-preset', 'ultrafast',  # Thay đổi từ veryfast → ultrafast cho streaming
             '-tune', 'zerolatency',
-            '-profile:v', 'baseline',
+            '-profile:v', 'baseline',  # Thay đổi từ main → baseline (tương thích tốt hơn)
             '-level', '3.0',
             '-g', str(video_fps * 2),
             '-keyint_min', str(video_fps),
             '-sc_threshold', '0',
-            '-b:v', '800k',
+            '-b:v', '800k',  # Giảm bitrate cho streaming mượt hơn
             '-maxrate', '1000k',
             '-bufsize', '2000k',
             '-pix_fmt', 'yuv420p',
@@ -250,20 +246,17 @@ class FFmpegRecorder:
             '-map', '0:v',
         ])
         
-        ## ◀️ ◀️ ◀️ BẮT ĐẦU SỬA LỖI (FILE HỎNG) ◀️ ◀️ ◀️
-        # FIX 3: Thêm movflags để file mp4 không bị hỏng khi crash
+        # ✅ FIX: Tee output với cấu hình HLS tối ưu
         tee_output = (
             f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
             f"segment_start_number=0:"
-            f"reset_timestamps=1:segment_list_flags=live:"
-            f"movflags=+frag_keyframe+empty_moov]{timestamp_pattern}|"  # <-- ĐÃ THÊM MOVFLAGS
+            f"reset_timestamps=1:segment_list_flags=live]{timestamp_pattern}|"  # <-- ĐÃ SỬA: Xóa strftime=1
             f"[f=hls:hls_time=2:hls_list_size=5:"
             f"hls_flags=delete_segments+independent_segments+append_list:"
             f"hls_segment_type=mpegts:start_number=0:"
             f"hls_allow_cache=0:"
             f"hls_segment_filename={self.hls_dir}/segment_%03d.ts]{self.hls_dir}/stream.m3u8"
         )
-        ## ◀️ ◀️ ◀️ KẾT THÚC SỬA LỖI ◀️ ◀️ ◀️
         
         cmd.append(tee_output)
         
@@ -296,7 +289,7 @@ class FFmpegRecorder:
                     for line in iter(self.ffmpeg_process.stdout.readline, ''):
                         output_queue.put(line)
                         lower_line = line.lower()
-                        # Log HLS-specific errors
+                        # ✅ FIX 5: Log HLS-specific errors
                         if any(word in lower_line for word in ['error', 'failed', 'no such device', 
                                                                'invalid argument', 'ioctl', 
                                                                'demuxing', 'hls', 'segment']):
@@ -330,7 +323,7 @@ class FFmpegRecorder:
                 print(f"❌ FFmpeg exited early: code {self.ffmpeg_process.returncode}")
                 return False
             
-            # Verify HLS files created
+            # ✅ FIX 6: Verify HLS files created
             time.sleep(2)
             if not Path(f"{self.hls_dir}/stream.m3u8").exists():
                 print(f"⚠️ Warning: stream.m3u8 not created yet")
@@ -404,7 +397,7 @@ if __name__ == "__main__":
             print("  ↳ Test with: ffplay /tmp/picam_hls/stream.m3u8")
             print("  ↳ Or web browser: http://your-pi-ip/live")
             
-            # Vòng lặp tự động khởi động lại
+            # ◀️ ◀️ ◀️ THAY ĐỔI: Thêm vòng lặp tự động khởi động lại ◀️ ◀️ ◀️
             while True:
                 if not recorder.is_running():
                     print("⚠️ FFmpeg process stopped unexpectedly! Restarting in 5s...")
@@ -421,6 +414,7 @@ if __name__ == "__main__":
                         print("✅ FFmpeg restarted successfully.")
                 
                 time.sleep(2) # Kiểm tra trạng thái mỗi 2 giây
+            # ◀️ ◀️ ◀️ KẾT THÚC THAY ĐỔI ◀️ ◀️ ◀️
             
         else:
             print("❌ Failed to start recording")
