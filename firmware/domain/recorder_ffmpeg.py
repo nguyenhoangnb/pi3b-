@@ -228,12 +228,12 @@ class FFmpegRecorder:
         # ✅ FIX: Tee output với cấu hình HLS tối ưu
         tee_output = (
             f"[f=segment:segment_time={self.segment_seconds}:segment_format=mp4:"
-            f"segment_start_number=0:"  # ← FIX 1: Thêm start number
-            f"reset_timestamps=1:strftime=1:segment_list_flags=live]{timestamp_pattern}|"
-            f"[f=hls:hls_time=2:hls_list_size=5:"  # ← FIX 2: Giảm list size
-            f"hls_flags=delete_segments+independent_segments+append_list:"  # ← FIX 3: Thêm append_list
+            f"segment_start_number=0:"
+            f"reset_timestamps=1:segment_list_flags=live]{timestamp_pattern}|"  # <-- ĐÃ SỬA: Xóa strftime=1
+            f"[f=hls:hls_time=2:hls_list_size=5:"
+            f"hls_flags=delete_segments+independent_segments+append_list:"
             f"hls_segment_type=mpegts:start_number=0:"
-            f"hls_allow_cache=0:"  # ← FIX 4: Disable cache cho live stream
+            f"hls_allow_cache=0:"
             f"hls_segment_filename={self.hls_dir}/segment_%03d.ts]{self.hls_dir}/stream.m3u8"
         )
         
@@ -316,30 +316,6 @@ class FFmpegRecorder:
             print(f"❌ Failed to start FFmpeg: {e}")
             traceback.print_exc()
             return False
-
-    def stop_recording(self):
-        """Stop FFmpeg recording"""
-        if not self.is_running():
-            return
-        
-        print("⏱ Stopping FFmpeg...")
-        
-        self._stop_flag = True
-        
-        try:
-            self.ffmpeg_process.terminate()
-            self.ffmpeg_process.wait(timeout=10)
-            print("   ✅ FFmpeg stopped")
-        except subprocess.TimeoutExpired:
-            print("   ⚠️ Timeout, force killing...")
-            self.ffmpeg_process.kill()
-            self.ffmpeg_process.wait()
-        except Exception as e:
-            print(f"   ⚠️ Error stopping FFmpeg: {e}")
-        
-        self.ffmpeg_process = None
-        self.led_control.off()
-        print("   💡 LED off")
     
     def is_running(self):
         """Check if FFmpeg is running"""
