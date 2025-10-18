@@ -33,7 +33,7 @@ HLS_DIR = "/tmp/picam_hls"
 @validate_request
 def live_video():
     """Return HTML page with HLS video player"""
-    hls_url = f"file://{HLS_DIR}/stream.m3u8"
+    hls_url = f"{HLS_DIR}/stream.m3u8"
     html = f"""
     <!DOCTYPE html>
     <html>

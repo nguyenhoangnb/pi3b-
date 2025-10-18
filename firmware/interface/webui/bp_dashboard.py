@@ -229,7 +229,7 @@ video,img{width:100%;max-height:62vh;background:#000;border-radius:12px}
 document.addEventListener('DOMContentLoaded', function() {
   const video = document.getElementById('videoStream');
   // Use direct file URL for local HLS
-  const hlsUrl = 'file:///tmp/picam_hls/stream.m3u8';
+  const hlsUrl = '/tmp/picam_hls/stream.m3u8';
     
     if (Hls.isSupported()) {
         const hls = new Hls({
