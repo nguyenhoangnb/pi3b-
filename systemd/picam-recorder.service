@@ -1,16 +1,10 @@
-[Unit]
-Description=Pi Camera Recorder Service
-After=network.target
-
 [Service]
-User=admin
+Type=simple
+User=root
+Group=root
 WorkingDirectory=/home/admin/pi3b-
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/admin/pi3b-/.venv/bin/python /home/admin/pi3b-/firmware/domain/recorder.py
 Restart=always
-RestartSec=3
-StandardOutput=append:/home/admin/pi3b-/logs/recorder.log
-StandardError=append:/home/admin/pi3b-/logs/recorder.err
-Environment="PYTHONUNBUFFERED=1"
-
-[Install]
-WantedBy=multi-user.target
+RestartSec=5
+TimeoutStartSec=300
