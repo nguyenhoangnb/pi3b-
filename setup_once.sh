@@ -3,7 +3,8 @@ set -Eeuo pipefail
 sudo apt update
 sudo apt upgrade
 sudo apt-get install -y ffmpeg fonts-dejavu-core python3-libgpiod 
-
+chmod +x chmod_all.sh
+./chmod_all.sh
 # ============================================================================
 # PiCam • setup_once.sh (merged & annotated)
 # ----------------------------------------------------------------------------
