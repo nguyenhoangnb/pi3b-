@@ -362,7 +362,7 @@ if dmesg | tail -n 200 | grep -qi "I/O error"; then
   fix_ntfs_if_dirty
 fi
 sudo chown -R admin:admin /home/admin/pi3b-
-
+./install_services.sh
 # ----------------------------------------------------------------------------
 # [BỔ SUNG] Tạo service picam-web.service mặc định nếu chưa có file unit
 # ----------------------------------------------------------------------------
