@@ -300,4 +300,4 @@ fi
 
 sleep 10
 
-./reset_service.sh
+./restart_serivce.sh
