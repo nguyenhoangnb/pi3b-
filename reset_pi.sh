@@ -1,56 +1,38 @@
 #!/bin/bash
-echo "⚠️  Bắt đầu reset Raspberry Pi OS (sạch toàn bộ, giữ SSH và mạng)..."
-sleep 3
+# ================================================
+#  Raspberry Pi Debian 13 Reset Script
+#  Author: ChatGPT (GPT-5)
+#  Purpose: Reinstall base system packages, clean cache, and clear user data
+# ================================================
 
-# 1️⃣ Giữ lại cấu hình mạng & SSH
-sudo mkdir -p /backup_keep
-sudo cp -r /etc/ssh /backup_keep/
-sudo cp -r /etc/network /backup_keep/ 2>/dev/null
-sudo cp /etc/hostname /backup_keep/
-sudo cp /etc/hosts /backup_keep/
-sudo cp /etc/dhcpcd.conf /backup_keep/ 2>/dev/null
-sudo cp -r /etc/wpa_supplicant /backup_keep/ 2>/dev/null
+echo "⚠️  WARNING: This will reinstall base Debian packages and DELETE all files in /home/admin/"
+read -p "Do you want to continue? (yes/no): " confirm
 
-echo "✅ Backup SSH và cấu hình mạng hoàn tất."
+if [[ "$confirm" != "yes" ]]; then
+  echo "❌ Operation cancelled."
+  exit 1
+fi
 
-# 2️⃣ Xoá toàn bộ dữ liệu user (home, cache, logs, ROS, python, ...)
-sudo rm -rf /home/pi/*
-sudo rm -rf /opt/*
-sudo rm -rf /usr/local/*
-sudo rm -rf /var/log/*
+echo "🔧 Cleaning old package caches..."
 sudo apt clean
-sudo apt autoclean
-sudo apt autoremove --purge -y
 
-echo "🧹 Đã xoá sạch dữ liệu người dùng và ứng dụng tùy chỉnh."
+echo "📦 Updating package lists..."
+sudo apt update -y
 
-# 3️⃣ Cài lại các gói lõi hệ thống
-sudo apt update
-sudo apt install --reinstall -y \
-  raspberrypi-bootloader raspberrypi-kernel \
-  raspberrypi-ui-mods raspberrypi-sys-mods \
-  pi-bluetooth raspi-config lxappearance lxsession \
-  openssh-server net-tools dhcpcd5 ifupdown \
-  network-manager
+echo "♻️  Reinstalling essential Debian packages..."
+sudo apt install --reinstall debian-goodies base-files bash coreutils systemd network-manager openssh-server sudo nano -y
 
-echo "🔧 Đã cài lại hệ thống lõi."
-
-# 4️⃣ Khôi phục SSH và cấu hình mạng
-sudo cp -r /backup_keep/ssh /etc/
-sudo cp -r /backup_keep/network /etc/ 2>/dev/null
-sudo cp /backup_keep/hostname /etc/
-sudo cp /backup_keep/hosts /etc/
-sudo cp /backup_keep/dhcpcd.conf /etc/ 2>/dev/null
-sudo cp -r /backup_keep/wpa_supplicant /etc/ 2>/dev/null
-
-echo "🔁 Đã khôi phục cấu hình SSH và mạng."
-
-# 5️⃣ Dọn lại package và nâng cấp hệ thống
+echo "⬆️  Upgrading all packages to latest versions..."
 sudo apt full-upgrade -y
+
+echo "🧹 Removing unused packages..."
 sudo apt autoremove --purge -y
 sudo apt autoclean
-sudo apt clean
 
-echo "✅ Reset hoàn tất. Sẽ khởi động lại sau 5 giây..."
+echo "🗑️  Clearing all files in /home/admin..."
+sudo rm -rf /home/admin/*
+
+echo "✅ Reset completed successfully!"
+echo "🔁 Rebooting system in 5 seconds..."
 sleep 5
 sudo reboot
