@@ -7,7 +7,7 @@ Type=simple
 User=admin
 WorkingDirectory=/home/admin/pi3b-
 # Use a relative path for the script
-ExecStart=/bin/bash restart_services.sh
+ExecStart=/bin/bash ./restart_services.sh
 Restart=no
 
 [Install]
