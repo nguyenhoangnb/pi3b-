@@ -2,4 +2,4 @@ picam-web.service
 picam-api.service
 picam-recorder.service
 picam-network.service
-restart_services
+restart_services.service
