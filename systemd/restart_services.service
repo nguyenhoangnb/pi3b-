@@ -4,10 +4,10 @@ After=network.target
 
 [Service]
 Type=simple
-User=admin
+User=root
 WorkingDirectory=/home/admin/pi3b-
-# Use a relative path for the script
-ExecStart=/bin/bash ./restart_services.sh
+# Use absolute path instead of relative
+ExecStart=/bin/bash /home/admin/pi3b-/restart_services.sh
 Restart=no
 
 [Install]
