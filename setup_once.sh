@@ -297,7 +297,7 @@ if grep -qE '^\s*dtoverlay=i2c-rtc' "$CFG"; then
 else
   sed -i "/^\[all\]/a dtoverlay=i2c-rtc,${RTC_OVERLAY:-ds3231}" "$CFG"
 fi
-
+./install_services.sh
 sleep 10
 
 ./restart_serivce.sh
