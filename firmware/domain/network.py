@@ -528,37 +528,37 @@ def main():
     try:
         orchestrator.start()
         
-        print("\n=== Controls ===")
-        print("1 → Simulate Reed trigger")
-        print("s → Show status")
-        print("x → Exit\n")
+        # print("\n=== Controls ===")
+        # print("1 → Simulate Reed trigger")
+        # print("s → Show status")
+        # print("x → Exit\n")
 
-        while True:
-            cmd = input("> ").strip().lower()
+        # while True:
+        #     cmd = input("> ").strip().lower()
             
-            if cmd == "x":
-                print("👋 Exiting...")
-                break
+        #     if cmd == "x":
+        #         print("👋 Exiting...")
+        #         break
 
-            elif cmd == "1":
-                print("🔔 Simulating Reed trigger...")
-                orchestrator._reed_triggered()
+        #     elif cmd == "1":
+        #         print("🔔 Simulating Reed trigger...")
+        #         orchestrator._reed_triggered()
 
-            elif cmd == "s":
-                status = orchestrator.get_status()
-                print(f"\n📊 WiFi Status:")
-                print(f"   🔸 State: {status['state']}")
-                print(f"   🔸 Sequence elapsed: {status['sequence_elapsed_seconds']}s")
-                print(f"   🔸 Client SSID: {status['client_ssid']}")
-                print(f"   🔸 AP SSID: {status['ap_ssid']}")
-                if status['auto_off_active']:
-                    print(f"   ⏰ Auto-off in: {status['auto_off_remaining_minutes']} min")
-                else:
-                    print(f"   ⏰ Auto-off: Inactive")
-                print()
+        #     elif cmd == "s":
+        #         status = orchestrator.get_status()
+        #         print(f"\n📊 WiFi Status:")
+        #         print(f"   🔸 State: {status['state']}")
+        #         print(f"   🔸 Sequence elapsed: {status['sequence_elapsed_seconds']}s")
+        #         print(f"   🔸 Client SSID: {status['client_ssid']}")
+        #         print(f"   🔸 AP SSID: {status['ap_ssid']}")
+        #         if status['auto_off_active']:
+        #             print(f"   ⏰ Auto-off in: {status['auto_off_remaining_minutes']} min")
+        #         else:
+        #             print(f"   ⏰ Auto-off: Inactive")
+        #         print()
 
-            else:
-                print("⚠ Unknown command")
+        #     else:
+        #         print("⚠ Unknown command")
                 
     except KeyboardInterrupt:
         print("\n🛑 Interrupted")
