@@ -11,7 +11,7 @@ Group=admin
 WorkingDirectory=/home/admin/pi3b-
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/admin/pi3b-/.venv/bin/python /home/admin/pi3b-/firmware/domain/network.py
-Restart=on-failure
+Restart=always
 RestartSec=3
 
 [Install]
