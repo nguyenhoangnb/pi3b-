@@ -1,0 +1,13 @@
+[Unit]
+Description=Restart custom services on startup
+After=network.target
+
+[Service]
+Type=simple
+User=admin
+WorkingDirectory=/home/admin/pi3b-
+ExecStart=/home/admin/pi3b-/restart_services.sh
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
