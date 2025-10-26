@@ -6,7 +6,8 @@ After=network.target
 Type=simple
 User=admin
 WorkingDirectory=/home/admin/pi3b-
-ExecStart=/bin/bash /home/admin/pi3b-/restart_services.sh
+# Use a relative path for the script
+ExecStart=/bin/bash restart_services.sh
 Restart=no
 
 [Install]
