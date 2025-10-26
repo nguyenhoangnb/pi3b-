@@ -6,8 +6,8 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-User=root
-Group=root
+User=admin
+Group=admin
 WorkingDirectory=/home/admin/pi3b-
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/env bash -lc 'source /home/admin/pi3b-/.venv/bin/activate; exec python /home/admin/pi3b-/firmware/domain/network.py'
