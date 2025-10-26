@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=admin
 WorkingDirectory=/home/admin/pi3b-
-ExecStart=/home/admin/pi3b-/restart_services.sh
+ExecStart=/bin/bash /home/admin/pi3b-/restart_services.sh
 Restart=on-failure
 
 [Install]
