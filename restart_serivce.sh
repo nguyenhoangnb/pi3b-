@@ -1,6 +1,6 @@
 #!/bin/bash
 
-SERVICES_FILE="./services.list"
+SERVICES_FILE="./services_restart.list"
 
 if [ ! -f "$SERVICES_FILE" ]; then
     echo "❌ File $SERVICES_FILE không tồn tại!"
