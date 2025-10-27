@@ -332,7 +332,7 @@ class FFmpegRecorder:
                 return False
             
             # ✅ FIX 6: Verify HLS files created
-            time.sleep(2)
+            time.sleep(5)
             if not Path(f"{self.hls_dir}/stream.m3u8").exists():
                 print(f"⚠️ Warning: stream.m3u8 not created yet")
             else:
