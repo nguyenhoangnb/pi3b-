@@ -52,7 +52,7 @@ def gen_frames():
         os.path.join(HLS_DIR, "stream.m3u8"),
 
         # Đồng thời stream MJPEG ra stdout cho Flask
-        "-f", "mjpeg",
+        "-f", "yuv420p",
         "-q:v", "5",
         "pipe:1"
     ]
