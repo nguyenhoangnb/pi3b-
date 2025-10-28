@@ -223,7 +223,7 @@ class FFmpegRecorder:
         # Video codec settings
         cmd.extend([
             '-vf', filter_string,
-            '-c:v', 'h264_omx',
+            '-c:v', 'libx264',
             '-preset', 'ultrafast',  # Thay đổi từ veryfast → ultrafast cho streaming
             '-tune', 'zerolatency',
             '-profile:v', 'baseline',  # Thay đổi từ main → baseline (tương thích tốt hơn)
@@ -231,7 +231,7 @@ class FFmpegRecorder:
             '-g', str(video_fps * 2),
             '-keyint_min', str(video_fps),
             '-sc_threshold', '0',
-            '-b:v', '800k',  # Giảm bitrate cho streaming mượt hơn
+            '-b:v', '500l',  # Giảm bitrate cho streaming mượt hơn
             '-maxrate', '1000k',
             '-bufsize', '2000k',
             '-pix_fmt', 'yuv420p',
