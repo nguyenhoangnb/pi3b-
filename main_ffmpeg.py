@@ -154,4 +154,4 @@ if __name__ == "__main__":
     start_ffmpeg()
     print(f"🌐 Mở trình duyệt tại: http://<IP_RaspberryPi>:5000/live")
     print(f"💾 HLS tạm tại: {HLS_DIR}")
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=8080, debug=False)
