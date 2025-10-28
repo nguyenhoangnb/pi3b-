@@ -118,11 +118,19 @@ def serve_hls(filename):
 app.register_blueprint(bp)
 
 # ============================================================
+# ROUTE GỐC (REDIRECT)
+# ============================================================
+
+@app.route("/")
+def root():
+    """Chuyển hướng từ / sang /live"""
+    return "<meta http-equiv='refresh' content='0; url=/live'>"
+
+# ============================================================
 # KHỞI ĐỘNG FFMPEG
 # ============================================================
 
 def start_ffmpeg():
-    # Dừng ffmpeg cũ (nếu có)
     os.system("pkill -f 'ffmpeg.*picam_hls' || true")
 
     ffmpeg_cmd = [
@@ -152,6 +160,6 @@ def start_ffmpeg():
 
 if __name__ == "__main__":
     start_ffmpeg()
-    print(f"🌐 Mở trình duyệt tại: http://<IP_RaspberryPi>:5000/live")
+    print(f"🌐 Mở trình duyệt tại: http://<IP_RaspberryPi>:5000/  (hoặc /live)")
     print(f"💾 HLS tạm tại: {HLS_DIR}")
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False)
