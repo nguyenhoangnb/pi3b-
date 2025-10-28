@@ -1,27 +1,45 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# ==============================================
+# setup_picam_webui.sh
+# Script tự động tạo và kích hoạt service PiCam WebUI (Flask)
+# ==============================================
 
-SCRIPT=$(basename "$0")
+SERVICE_NAME=web.service
+SERVICE_PATH=/etc/systemd/system/$SERVICE_NAME
 
-# fetch status
-STATUS=$(vcgencmd get_throttled | cut -d "=" -f 2)
+echo "🔧 Đang tạo systemd service: $SERVICE_PATH ..."
 
-# decode - https://www.raspberrypi.com/documentation/computers/os.html#get_throttled
-echo "vcgencmd get_throttled ($STATUS)"
-IFS=","
-for BITMAP in \
-   00,"currently under-voltage" \
-   01,"ARM frequency currently capped" \
-   02,"currently throttled" \
-   03,"soft temperature limit reached" \
-   16,"under-voltage has occurred since last reboot" \
-   17,"ARM frequency capping has occurred since last reboot" \
-   18,"throttling has occurred since last reboot" \
-   19,"soft temperature reached since last reboot"
-do set -- $BITMAP
-   if [ $(($STATUS & 1 << $1)) -ne 0 ] ; then echo "  $2" ; fi
-done
+sudo bash -c "cat > $SERVICE_PATH" <<'EOF'
+[Unit]
+Description=PiCam WebUI (Flask)
+After=network-online.target
+Wants=network-online.target
 
-echo "vcgencmd measure_volts:"
-for S in core sdram_c sdram_i sdram_p ; do printf '%9s %s\n' "$S" "$(vcgencmd measure_volts $S)" ; done
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/pi3b-
+EnvironmentFile=/etc/default/picam
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/env bash -lc 'source .venv/bin/activate; exec python /home/admin/pi3b-/main_ffmpeg.py'
+Restart=on-failure
+RestartSec=2
 
-echo "Temperature: $(vcgencmd measure_temp)"
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "✅ Service file đã được tạo."
+
+# Nạp lại systemd
+echo "🔄 Reload systemd daemon..."
+sudo systemctl daemon-reload
+
+# Kích hoạt auto start
+echo "🚀 Bật auto start cho service..."
+sudo systemctl enable --now $SERVICE_NAME
+
+# Hiển thị trạng thái
+echo "📋 Trạng thái service:"
+sudo systemctl status $SERVICE_NAME --no-pager
