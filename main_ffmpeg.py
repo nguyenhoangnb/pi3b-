@@ -1,83 +1,85 @@
-from flask import Flask, Response, render_template_string
+from flask import Flask, send_from_directory, render_template_string
 import subprocess
 import os
+import signal
 
 app = Flask(__name__)
 
-# ---- Cấu hình ----
+# ==== Cấu hình ====
 VIDEO_DEVICE = "/dev/video0"
-HLS_DIR = "/home/admin/hls"   # đổi đường dẫn nếu cần (VD: /media/usb/hls)
+HLS_DIR = "/home/admin/hls"      # Thư mục lưu HLS
 FRAME_RATE = "15"
 RESOLUTION = "640x480"
 
-# Tạo thư mục lưu HLS nếu chưa có
+# ==== Khởi tạo ====
 os.makedirs(HLS_DIR, exist_ok=True)
 
+# ==== HTML giao diện ====
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Live Camera Stream (HLS + FFmpeg)</title>
+    <meta charset="utf-8">
+    <title>🎥 Live Camera Stream (HLS + FFmpeg)</title>
     <style>
-        body { text-align: center; background: #111; color: #eee; font-family: sans-serif; }
-        img { width: 80%; border: 4px solid #444; border-radius: 10px; }
+        body { background: #111; color: #eee; text-align: center; font-family: sans-serif; }
+        video { width: 80%; border: 3px solid #555; border-radius: 10px; margin-top: 20px; }
         h2 { color: #0f0; }
+        p { color: #ccc; }
     </style>
 </head>
 <body>
     <h2>🎥 Live Camera Stream (HLS + FFmpeg)</h2>
-    <img src="{{ url_for('video_feed') }}">
-    <p>💾 Ghi HLS tại: {{ hls_path }}</p>
+    <video id="videoPlayer" controls autoplay muted playsinline>
+        <source src="/hls/stream.m3u8" type="application/x-mpegURL">
+        Trình duyệt của bạn không hỗ trợ HLS.
+    </video>
+    <p>💾 HLS được lưu tại: {{ hls_path }}</p>
 </body>
 </html>
 """
 
-def gen_frames():
-    """Chạy FFmpeg ghi HLS + xuất MJPEG"""
-    ffmpeg_cmd = [
+# ==== Hàm khởi chạy FFmpeg ghi HLS ====
+def start_hls_stream():
+    cmd = [
         "ffmpeg",
         "-f", "v4l2",
         "-framerate", FRAME_RATE,
         "-video_size", RESOLUTION,
         "-i", VIDEO_DEVICE,
-
-        # Overlay thời gian hệ thống lên video
         "-vf", "drawtext=text='%{localtime\\:%Y-%m-%d %H\\\\\\:%M\\\\\\:%S}':x=10:y=10:fontcolor=white:fontsize=20",
-
-        # Ghi HLS ra thư mục
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-tune", "zerolatency",
         "-f", "hls",
         "-hls_time", "5",
-        "-hls_list_size", "3",
-        "-hls_flags", "delete_segments",
-        os.path.join(HLS_DIR, "stream.m3u8"),
-
-        # Đồng thời stream MJPEG ra stdout cho Flask
-        "-f", "yuv420p",
-        "-q:v", "5",
-        "pipe:1"
+        "-hls_list_size", "5",
+        "-hls_flags", "delete_segments+append_list",
+        os.path.join(HLS_DIR, "stream.m3u8")
     ]
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
-    process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**7)
-
-    try:
-        while True:
-            chunk = process.stdout.read(1024)
-            if not chunk:
-                break
-            yield (b"--frame\r\n"
-                   b"Content-Type: image/jpeg\r\n\r\n" + chunk + b"\r\n")
-    except GeneratorExit:
-        process.kill()
+# ==== Flask Routes ====
 
 @app.route("/")
 def index():
     return render_template_string(HTML_PAGE, hls_path=HLS_DIR)
 
-@app.route("/video_feed")
-def video_feed():
-    return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+@app.route("/hls/<path:filename>")
+def serve_hls(filename):
+    return send_from_directory(HLS_DIR, filename)
 
+# ==== Chạy server ====
 if __name__ == "__main__":
-    print(f"🌐 Flask FFmpeg HLS stream running at: http://<IP_RaspberryPi>:8080/")
-    print(f"💾 HLS saved to: {HLS_DIR}")
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    print(f"🌐 Flask HLS stream running at: http://<IP_RaspberryPi>:8080/")
+    print(f"💾 HLS files saved to: {HLS_DIR}")
+
+    ffmpeg_process = start_hls_stream()
+
+    try:
+        app.run(host="0.0.0.0", port=8080, debug=False)
+    finally:
+        # Khi dừng Flask → dừng luôn ffmpeg
+        if ffmpeg_process.poll() is None:
+            ffmpeg_process.send_signal(signal.SIGINT)
+            ffmpeg_process.wait()
