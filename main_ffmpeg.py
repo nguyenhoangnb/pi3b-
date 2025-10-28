@@ -1,26 +1,23 @@
 from flask import Flask, Response, render_template_string
-import cv2
-import datetime
+import subprocess
+import os
 
 app = Flask(__name__)
 
-# Mở camera (tự dò camera khả dụng)
-camera = None
-for cam in range(31):
-    camera = cv2.VideoCapture(cam)
-    if camera.isOpened():
-        print(f"✅ Đang sử dụng camera: /dev/video{cam}")
-        break
+# ---- Cấu hình ----
+VIDEO_DEVICE = "/dev/video0"
+HLS_DIR = "/home/admin/hls"   # đổi đường dẫn nếu cần (VD: /media/usb/hls)
+FRAME_RATE = "15"
+RESOLUTION = "640x480"
 
-if not camera or not camera.isOpened():
-    raise RuntimeError("❌ Không thể mở camera!")
+# Tạo thư mục lưu HLS nếu chưa có
+os.makedirs(HLS_DIR, exist_ok=True)
 
-# HTML giao diện đơn giản
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Live Camera Stream</title>
+    <title>Live Camera Stream (HLS + FFmpeg)</title>
     <style>
         body { text-align: center; background: #111; color: #eee; font-family: sans-serif; }
         img { width: 80%; border: 4px solid #444; border-radius: 10px; }
@@ -28,45 +25,59 @@ HTML_PAGE = """
     </style>
 </head>
 <body>
-    <h2>📷 Live Camera Stream</h2>
+    <h2>🎥 Live Camera Stream (HLS + FFmpeg)</h2>
     <img src="{{ url_for('video_feed') }}">
-    <p>⏱ Hiển thị thời gian thực trên mỗi khung hình</p>
+    <p>💾 Ghi HLS tại: {{ hls_path }}</p>
 </body>
 </html>
 """
 
 def gen_frames():
-    """Đọc frame từ camera, overlay thời gian, rồi encode JPEG"""
-    font = cv2.FONT_HERSHEY_SIMPLEX
+    """Chạy FFmpeg ghi HLS + xuất MJPEG"""
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-f", "v4l2",
+        "-framerate", FRAME_RATE,
+        "-video_size", RESOLUTION,
+        "-i", VIDEO_DEVICE,
 
-    while True:
-        success, frame = camera.read()
-        if not success:
-            break
+        # Overlay thời gian hệ thống lên video
+        "-vf", "drawtext=text='%{localtime\\:%Y-%m-%d %H\\\\\\:%M\\\\\\:%S}':x=10:y=10:fontcolor=white:fontsize=20",
 
-        # Lấy thời gian hiện tại (hệ thống)
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Ghi HLS ra thư mục
+        "-f", "hls",
+        "-hls_time", "5",
+        "-hls_list_size", "3",
+        "-hls_flags", "delete_segments",
+        os.path.join(HLS_DIR, "stream.m3u8"),
 
-        # Overlay thời gian lên góc trên bên trái
-        cv2.putText(frame, timestamp, (10, 30), font, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        # Đồng thời stream MJPEG ra stdout cho Flask
+        "-f", "mjpeg",
+        "-q:v", "5",
+        "pipe:1"
+    ]
 
-        # Encode frame thành JPEG
-        ret, buffer = cv2.imencode('.jpg', frame)
-        frame_bytes = buffer.tobytes()
+    process = subprocess.Popen(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=10**7)
 
-        # Stream theo định dạng multipart/x-mixed-replace
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+    try:
+        while True:
+            chunk = process.stdout.read(1024)
+            if not chunk:
+                break
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n\r\n" + chunk + b"\r\n")
+    except GeneratorExit:
+        process.kill()
 
-@app.route('/')
+@app.route("/")
 def index():
-    return render_template_string(HTML_PAGE)
+    return render_template_string(HTML_PAGE, hls_path=HLS_DIR)
 
-@app.route('/video_feed')
+@app.route("/video_feed")
 def video_feed():
-    return Response(gen_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(gen_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
-if __name__ == '__main__':
-    # Chạy server để truy cập qua LAN
-    print("🌐 Flask MJPEG stream chạy tại: http://<IP_RaspberryPi>:8080/")
-    app.run(host='0.0.0.0', port=8080, debug=False)
+if __name__ == "__main__":
+    print(f"🌐 Flask FFmpeg HLS stream running at: http://<IP_RaspberryPi>:8080/")
+    print(f"💾 HLS saved to: {HLS_DIR}")
+    app.run(host="0.0.0.0", port=8080, debug=False)
