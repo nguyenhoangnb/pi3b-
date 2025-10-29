@@ -50,7 +50,7 @@ def start_ffmpeg():
         "-video_size", RESOLUTION,
         "-i", VIDEO_DEVICE,
         "-vf", "drawtext=text='%{localtime\\:%Y-%m-%d %H\\\\\\:%M\\\\\\:%S}':x=10:y=10:fontcolor=white:fontsize=20",
-        "-vcodec", "libx264",
+        "-vcodec", "h264_v4l2m2m",
         "-preset", "ultrafast",
         "-tune", "zerolatency",
         "-pix_fmt", "yuv420p",
