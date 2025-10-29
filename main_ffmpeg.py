@@ -1,72 +1,157 @@
 #!/usr/bin/env python3
-import os, subprocess, threading, time
-from flask import Flask, Response, render_template_string
+from __future__ import annotations
+from flask import Flask, Response, abort, render_template_string, send_from_directory, request
+from functools import wraps
+from pathlib import Path
+import subprocess
+import re
+import os
+import threading
+import time
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+VIDEO_DEVICE = "/dev/video0"
+FRAME_RATE = "15"
+RESOLUTION = "640x480"
+HLS_DIR = Path("/tmp/picam_hls")
 
 app = Flask(__name__)
-HLS_DIR = "/tmp/picam_hls"
-PORT = 8080
-
 os.makedirs(HLS_DIR, exist_ok=True)
 
-# === Khởi động FFmpeg ghi ra HLS ===
+# ============================================================
+# SECURITY VALIDATION
+# ============================================================
+
+def validate_request(f):
+    """Decorator kiểm tra path để tránh path traversal"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        path = request.path
+        if re.search(r'(\.\.|%2e%2e|%252e%252e|[\x00-\x1f\x7f]|[\'";]|\\x[0-9a-f]{2})', path, re.I):
+            abort(400, "Invalid characters in request path")
+        return f(*args, **kwargs)
+    return decorated
+
+# ============================================================
+# FFmpeg PROCESS
+# ============================================================
+
 def start_ffmpeg():
+    """Chạy FFmpeg để stream từ camera ra HLS"""
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel", "error",
+        "-f", "v4l2",
+        "-framerate", FRAME_RATE,
+        "-video_size", RESOLUTION,
+        "-i", VIDEO_DEVICE,
+        "-vf", r"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\:%M\\:%S}':x=10:y=10:fontcolor=white:fontsize=20",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-tune", "zerolatency",
+        "-pix_fmt", "yuv420p",
+        "-f", "hls",
+        "-hls_time", "2",
+        "-hls_list_size", "5",
+        "-hls_flags", "delete_segments+append_list",
+        str(HLS_DIR / "stream.m3u8")
+    ]
+    print("🎬 Starting FFmpeg:", " ".join(ffmpeg_cmd))
+    return subprocess.Popen(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def ffmpeg_watchdog():
+    process = None
     while True:
-        cmd = [
-            "ffmpeg",
-            "-f", "v4l2",
-            "-framerate", "30",
-            "-video_size", "640x480",
-            "-i", "/dev/video0",
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-tune", "zerolatency",
-            "-f", "hls",
-            "-hls_time", "2",
-            "-hls_list_size", "5",
-            "-hls_flags", "delete_segments",
-            f"{HLS_DIR}/stream.m3u8"
-        ]
+        if not process or process.poll() is not None:
+            print("🔁 FFmpeg not running or exited -> (re)starting")
+            process = start_ffmpeg()
+        time.sleep(5)
 
-        print("🔁 Starting FFmpeg...")
-        process = subprocess.Popen(cmd)
-        process.wait()
-        print("⚠️ FFmpeg exited, restarting in 3s...")
-        time.sleep(3)
+threading.Thread(target=ffmpeg_watchdog, daemon=True).start()
 
-threading.Thread(target=start_ffmpeg, daemon=True).start()
+# ============================================================
+# ROUTES
+# ============================================================
 
-# === Flask routes ===
 @app.route("/")
-def index():
-    return render_template_string("""
+def root():
+    return '<h3 style="color:white;text-align:center;background:black;padding:20px">Go to <a href="/live">/live</a> to view stream</h3>'
+
+@app.route("/live")
+@validate_request
+def live_video():
+    """Giao diện HTML phát HLS"""
+    hls_url = "/hls/stream.m3u8"
+    html = f"""
+    <!DOCTYPE html>
     <html>
-      <head>
-        <title>PiCam Stream</title>
-      </head>
-      <body style="background:#000;display:flex;justify-content:center;align-items:center;height:100vh;">
-        <video id="player" controls autoplay muted playsinline width="640" height="480"></video>
+    <head>
+        <title>📷 Live Camera Stream (HLS)</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+        <style>
+            body {{ background:#000; color:#eee; text-align:center; font-family:sans-serif; }}
+            video {{ width:90%; max-width:1280px; margin-top:20px; border-radius:8px; }}
+            h2 {{ color:#0f0; }}
+        </style>
+    </head>
+    <body>
+        <h2>🎥 Live Camera Stream</h2>
+        <p id="status">🔄 Connecting...</p>
+        <video id="video" controls autoplay muted></video>
         <script>
-          const video = document.getElementById('player');
-          if (Hls.isSupported()) {
-            const hls = new Hls();
-            hls.loadSource('/hls/stream.m3u8');
-            hls.attachMedia(video);
-            hls.on(Hls.Events.ERROR, function(event, data) {
-              console.error("HLS error:", data);
-            });
-          } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = '/hls/stream.m3u8';
-          }
+            const video = document.getElementById('video');
+            const statusEl = document.getElementById('status');
+            const hlsUrl = '{hls_url}';
+            if (Hls.isSupported()) {{
+                const hls = new Hls({{ maxBufferLength:4, maxMaxBufferLength:8, lowLatencyMode:true }});
+                hls.loadSource(hlsUrl);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {{
+                    statusEl.textContent = "✅ Streaming (HLS)";
+                    video.play().catch(() => statusEl.textContent="▶ Click Play to Start");
+                }});
+                hls.on(Hls.Events.ERROR, (event, data) => {{
+                    console.warn("HLS error", data);
+                    if (data.fatal) {{
+                        statusEl.textContent = "✖ Error: " + data.type;
+                        statusEl.style.color = "#f44";
+                        hls.destroy();
+                    }}
+                }});
+            }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+                video.src = hlsUrl;
+                video.addEventListener('loadedmetadata', () => video.play());
+                statusEl.textContent = "✅ Streaming (Native HLS)";
+            }} else {{
+                statusEl.textContent = "✖ Browser not supported";
+                statusEl.style.color = "#f44";
+            }}
         </script>
-      </body>
+    </body>
     </html>
-    """)
+    """
+    return render_template_string(html)
 
 @app.route("/hls/<path:filename>")
-def hls(filename):
-    return Response(open(os.path.join(HLS_DIR, filename), "rb"), mimetype="video/MP2T")
+@validate_request
+def serve_hls(filename):
+    """Phục vụ file HLS (m3u8, ts)"""
+    file_path = HLS_DIR / filename
+    if not file_path.exists() or not file_path.is_file():
+        # Nếu file chưa được tạo, trả về 404 tạm thời
+        abort(404, "File not found")
+    return send_from_directory(HLS_DIR, filename)
+
+# ============================================================
+# MAIN ENTRY
+# ============================================================
 
 if __name__ == "__main__":
-    print(f"🌐 Flask starting on port {PORT}")
-    app.run(host="0.0.0.0", port=PORT)
+    print(f"🌐 Flask HLS stream running at: http://<IP>:8080/live")
+    print(f"💾 HLS output: {HLS_DIR}")
+    app.run(host="0.0.0.0", port=8080, debug=False)
