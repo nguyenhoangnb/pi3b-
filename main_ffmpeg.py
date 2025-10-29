@@ -14,10 +14,9 @@ def start_ffmpeg():
         cmd = [
             "ffmpeg",
             "-f", "v4l2",
-            "-framerate", "15",
+            "-framerate", "30",
             "-video_size", "640x480",
             "-i", "/dev/video0",
-            "-vf", "drawtext=text='%{localtime\\:%Y-%m-%d %H\\\\:%M\\\\:%S}':fontcolor=white:x=10:y=10",
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-tune", "zerolatency",
@@ -27,6 +26,7 @@ def start_ffmpeg():
             "-hls_flags", "delete_segments",
             f"{HLS_DIR}/stream.m3u8"
         ]
+
         print("🔁 Starting FFmpeg...")
         process = subprocess.Popen(cmd)
         process.wait()
