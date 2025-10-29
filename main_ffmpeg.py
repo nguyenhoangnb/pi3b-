@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 from flask import Flask, Response, abort, render_template_string, send_from_directory, request
 from functools import wraps
 from pathlib import Path
 import subprocess
-import re
-import os
 import threading
 import time
+import re
+import os
 
 # ============================================================
 # CONFIG
 # ============================================================
-
 VIDEO_DEVICE = "/dev/video0"
-FRAME_RATE = "15"
+FRAME_RATE = "10"            # Giảm FPS để Pi 3B xử lý được
 RESOLUTION = "640x480"
 HLS_DIR = Path("/tmp/picam_hls")
 
@@ -24,9 +22,8 @@ os.makedirs(HLS_DIR, exist_ok=True)
 # ============================================================
 # SECURITY VALIDATION
 # ============================================================
-
 def validate_request(f):
-    """Decorator kiểm tra path để tránh path traversal"""
+    """Decorator kiểm tra path tránh path traversal"""
     @wraps(f)
     def decorated(*args, **kwargs):
         path = request.path
@@ -38,7 +35,6 @@ def validate_request(f):
 # ============================================================
 # FFmpeg PROCESS
 # ============================================================
-
 def start_ffmpeg():
     """Chạy FFmpeg để stream từ camera ra HLS"""
     ffmpeg_cmd = [
@@ -49,7 +45,6 @@ def start_ffmpeg():
         "-framerate", FRAME_RATE,
         "-video_size", RESOLUTION,
         "-i", VIDEO_DEVICE,
-        "-vf", r"drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='%{localtime\:%Y-%m-%d %H\\:%M\\:%S}':x=10:y=10:fontcolor=white:fontsize=20",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-tune", "zerolatency",
@@ -76,7 +71,6 @@ threading.Thread(target=ffmpeg_watchdog, daemon=True).start()
 # ============================================================
 # ROUTES
 # ============================================================
-
 @app.route("/")
 def root():
     return '<h3 style="color:white;text-align:center;background:black;padding:20px">Go to <a href="/live">/live</a> to view stream</h3>'
@@ -143,14 +137,20 @@ def serve_hls(filename):
     """Phục vụ file HLS (m3u8, ts)"""
     file_path = HLS_DIR / filename
     if not file_path.exists() or not file_path.is_file():
-        # Nếu file chưa được tạo, trả về 404 tạm thời
         abort(404, "File not found")
-    return send_from_directory(HLS_DIR, filename)
+
+    if filename.endswith(".m3u8"):
+        mimetype = "application/vnd.apple.mpegurl"
+    elif filename.endswith(".ts"):
+        mimetype = "video/mp2t"
+    else:
+        mimetype = "application/octet-stream"
+
+    return send_from_directory(HLS_DIR, filename, mimetype=mimetype)
 
 # ============================================================
 # MAIN ENTRY
 # ============================================================
-
 if __name__ == "__main__":
     print(f"🌐 Flask HLS stream running at: http://<IP>:8080/live")
     print(f"💾 HLS output: {HLS_DIR}")
